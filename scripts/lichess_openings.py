@@ -89,12 +89,21 @@ def build_live_game(channel: dict, game_data: dict) -> LiveGame:
     )
 
 
+def extract_game_id(channel: dict) -> str | None:
+    if "gameId" in channel:
+        return channel.get("gameId")
+    game = channel.get("game")
+    if isinstance(game, dict):
+        return game.get("id")
+    return None
+
+
 def fetch_openings(client: LichessClient, limit: int | None) -> Iterable[LiveGame]:
     channels = client.fetch_tv_channels()
     if limit is not None:
         channels = channels[:limit]
     for channel in channels:
-        game_id = channel.get("gameId")
+        game_id = extract_game_id(channel)
         if not game_id:
             continue
         game_data = client.fetch_game(game_id)
@@ -128,7 +137,9 @@ def build_openings_payload(games: Iterable[LiveGame]) -> list[dict]:
         grouped.setdefault(format_opening_key(game), []).append(game)
 
     payload = []
-    for opening, opening_games in sorted(grouped.items()):
+    for opening, opening_games in sorted(
+        grouped.items(), key=lambda item: len(item[1]), reverse=True
+    ):
         payload.append(
             {
                 "opening": opening,
@@ -147,29 +158,8 @@ def build_openings_payload(games: Iterable[LiveGame]) -> list[dict]:
     return payload
 
 
-def render_html(payload: list[dict]) -> str:
-    sections = []
-    for opening in payload:
-        games_html = "\n".join(
-            (
-                f"<li><a href=\"{game['url']}\" target=\"_blank\">"
-                f"{game['players']}</a> "
-                f"<span class=\"channel\">[{game['channel']}]</span></li>"
-            )
-            for game in opening["games"]
-        )
-        sections.append(
-            (
-                "<section class=\"opening\">"
-                f"<h2>{opening['opening']} "
-                f"<span class=\"count\">({opening['count']})</span></h2>"
-                f"<ul>{games_html}</ul>"
-                "</section>"
-            )
-        )
-    openings_html = "\n".join(sections) or "<p>No live games found.</p>"
-
-    return f"""<!doctype html>
+def render_html() -> str:
+    return """<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -179,6 +169,8 @@ def render_html(payload: list[dict]) -> str:
       body {{ font-family: sans-serif; margin: 32px; background: #f7f7f9; }}
       h1 {{ margin-bottom: 8px; }}
       .meta {{ color: #555; margin-bottom: 24px; }}
+      .controls {{ margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }}
+      .controls input {{ padding: 8px 10px; border-radius: 6px; border: 1px solid #ccc; width: 280px; }}
       .opening {{ background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; }}
       .opening h2 {{ margin: 0 0 8px 0; font-size: 1.1rem; }}
       .count {{ color: #666; font-weight: normal; }}
@@ -187,12 +179,82 @@ def render_html(payload: list[dict]) -> str:
       a {{ color: #1a4ae0; text-decoration: none; }}
       a:hover {{ text-decoration: underline; }}
       .channel {{ color: #666; }}
+      .muted {{ color: #777; }}
+      .error {{ background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 8px; }}
     </style>
   </head>
   <body>
     <h1>Chess Openings Live</h1>
     <p class="meta">Live games grouped by opening (Lichess TV).</p>
-    {openings_html}
+    <div class="controls">
+      <input id="filter" type="text" placeholder="Filter openings or players" />
+      <span id="summary" class="muted"></span>
+    </div>
+    <div id="status" class="muted">Loading live games…</div>
+    <div id="openings"></div>
+    <script>
+      const state = {{ openings: [], filter: '' }};
+      const openingsEl = document.getElementById('openings');
+      const statusEl = document.getElementById('status');
+      const summaryEl = document.getElementById('summary');
+      const filterEl = document.getElementById('filter');
+
+      function render() {{
+        const needle = state.filter.trim().toLowerCase();
+        const filtered = state.openings.filter(opening => {{
+          if (!needle) return true;
+          if (opening.opening.toLowerCase().includes(needle)) return true;
+          return opening.games.some(game => game.players.toLowerCase().includes(needle));
+        }});
+
+        if (!filtered.length) {{
+          openingsEl.innerHTML = '<p class="muted">No live games found.</p>';
+        }} else {{
+          openingsEl.innerHTML = filtered.map(opening => {{
+            const gamesHtml = opening.games.map(game => (
+              `<li><a href="${game.url}" target="_blank">${game.players}</a> <span class="channel">[${game.channel}]</span></li>`
+            )).join('');
+            return `
+              <section class="opening">
+                <h2>${opening.opening} <span class="count">(${opening.count})</span></h2>
+                <ul>${gamesHtml}</ul>
+              </section>
+            `;
+          }}).join('');
+        }}
+        const totalGames = filtered.reduce((sum, opening) => sum + opening.count, 0);
+        summaryEl.textContent = `${filtered.length} openings · ${totalGames} games`;
+      }}
+
+      async function refresh() {{
+        statusEl.textContent = 'Refreshing…';
+        statusEl.className = 'muted';
+        try {{
+          const response = await fetch('/api/openings');
+          if (!response.ok) {{
+            const text = await response.text();
+            throw new Error(text || `API error (${response.status})`);
+          }}
+          const data = await response.json();
+          state.openings = data;
+          statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
+          render();
+        }} catch (error) {{
+          statusEl.className = 'error';
+          statusEl.textContent = error.message;
+          openingsEl.innerHTML = '';
+          summaryEl.textContent = '';
+        }}
+      }}
+
+      filterEl.addEventListener('input', event => {{
+        state.filter = event.target.value;
+        render();
+      }});
+
+      refresh();
+      setInterval(refresh, 30000);
+    </script>
   </body>
 </html>
 """
@@ -230,7 +292,7 @@ def serve_openings(client: LichessClient, port: int, limit: int | None) -> int:
                 self.end_headers()
                 self.wfile.write(response)
                 return
-            html = render_html(payload).encode("utf-8")
+            html = render_html().encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(html)))

@@ -31,6 +31,9 @@ Then open http://localhost:8000 to browse openings with active games.
 If the page shows a gateway error, it usually means the Lichess API could not be reached
 (for example, due to firewalls, proxies, or missing internet access).
 
+The browser view refreshes every 30 seconds and includes a filter box so you can quickly
+search openings or player names.
+
 ## High-Level Workflow
 1. **Live game ingestion**
    - Subscribe to provider APIs or PGN streams.
