@@ -166,21 +166,21 @@ def render_html() -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Chess Openings Live</title>
     <style>
-      body {{ font-family: sans-serif; margin: 32px; background: #f7f7f9; }}
-      h1 {{ margin-bottom: 8px; }}
-      .meta {{ color: #555; margin-bottom: 24px; }}
-      .controls {{ margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }}
-      .controls input {{ padding: 8px 10px; border-radius: 6px; border: 1px solid #ccc; width: 280px; }}
-      .opening {{ background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; }}
-      .opening h2 {{ margin: 0 0 8px 0; font-size: 1.1rem; }}
-      .count {{ color: #666; font-weight: normal; }}
-      ul {{ margin: 0; padding-left: 18px; }}
-      li {{ margin-bottom: 6px; }}
-      a {{ color: #1a4ae0; text-decoration: none; }}
-      a:hover {{ text-decoration: underline; }}
-      .channel {{ color: #666; }}
-      .muted {{ color: #777; }}
-      .error {{ background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 8px; }}
+      body { font-family: sans-serif; margin: 32px; background: #f7f7f9; }
+      h1 { margin-bottom: 8px; }
+      .meta { color: #555; margin-bottom: 24px; }
+      .controls { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }
+      .controls input { padding: 8px 10px; border-radius: 6px; border: 1px solid #ccc; width: 280px; }
+      .opening { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+      .opening h2 { margin: 0 0 8px 0; font-size: 1.1rem; }
+      .count { color: #666; font-weight: normal; }
+      ul { margin: 0; padding-left: 18px; }
+      li { margin-bottom: 6px; }
+      a { color: #1a4ae0; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .channel { color: #666; }
+      .muted { color: #777; }
+      .error { background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 8px; }
     </style>
   </head>
   <body>
@@ -199,18 +199,18 @@ def render_html() -> str:
       const summaryEl = document.getElementById('summary');
       const filterEl = document.getElementById('filter');
 
-      function render() {{
+      function render() {
         const needle = state.filter.trim().toLowerCase();
-        const filtered = state.openings.filter(opening => {{
+        const filtered = state.openings.filter(opening => {
           if (!needle) return true;
           if (opening.opening.toLowerCase().includes(needle)) return true;
           return opening.games.some(game => game.players.toLowerCase().includes(needle));
-        }});
+        });
 
-        if (!filtered.length) {{
+        if (!filtered.length) {
           openingsEl.innerHTML = '<p class="muted">No live games found.</p>';
-        }} else {{
-          openingsEl.innerHTML = filtered.map(opening => {{
+        } else {
+          openingsEl.innerHTML = filtered.map(opening => {
             const gamesHtml = opening.games.map(game => (
               `<li><a href="${game.url}" target="_blank">${game.players}</a> <span class="channel">[${game.channel}]</span></li>`
             )).join('');
@@ -220,37 +220,37 @@ def render_html() -> str:
                 <ul>${gamesHtml}</ul>
               </section>
             `;
-          }}).join('');
-        }}
+          }).join('');
+        }
         const totalGames = filtered.reduce((sum, opening) => sum + opening.count, 0);
         summaryEl.textContent = `${filtered.length} openings · ${totalGames} games`;
-      }}
+      }
 
-      async function refresh() {{
+      async function refresh() {
         statusEl.textContent = 'Refreshing…';
         statusEl.className = 'muted';
-        try {{
+        try {
           const response = await fetch('/api/openings');
-          if (!response.ok) {{
+          if (!response.ok) {
             const text = await response.text();
             throw new Error(text || `API error (${response.status})`);
-          }}
+          }
           const data = await response.json();
           state.openings = data;
           statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
           render();
-        }} catch (error) {{
+        } catch (error) {
           statusEl.className = 'error';
           statusEl.textContent = error.message;
           openingsEl.innerHTML = '';
           summaryEl.textContent = '';
-        }}
-      }}
+        }
+      }
 
-      filterEl.addEventListener('input', event => {{
+      filterEl.addEventListener('input', event => {
         state.filter = event.target.value;
         render();
-      }});
+      });
 
       refresh();
       setInterval(refresh, 30000);
