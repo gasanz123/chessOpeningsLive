@@ -193,7 +193,7 @@ def render_html() -> str:
     <div id="status" class="muted">Loading live games…</div>
     <div id="openings"></div>
     <script>
-      const state = {{ openings: [], filter: '' }};
+      const state = { openings: [], filter: '' };
       const openingsEl = document.getElementById('openings');
       const statusEl = document.getElementById('status');
       const summaryEl = document.getElementById('summary');
