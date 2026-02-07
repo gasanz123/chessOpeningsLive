@@ -52,7 +52,16 @@ class LichessClient:
 
     def fetch_tv_channels(self) -> list[dict]:
         data = self._fetch_json(LICHESS_TV_URL)
-        return data.get("channels", [])
+        channels = data.get("channels", [])
+        if isinstance(channels, dict):
+            normalized = []
+            for name, payload in channels.items():
+                if isinstance(payload, dict):
+                    normalized.append({**payload, "name": payload.get("name", name)})
+            return normalized
+        if isinstance(channels, list):
+            return channels
+        return []
 
     def fetch_game(self, game_id: str) -> dict:
         return self._fetch_json(
