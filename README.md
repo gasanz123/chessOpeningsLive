@@ -28,6 +28,8 @@ python scripts/lichess_openings.py --serve
 ```
 
 Then open http://localhost:8000 to browse openings with active games.
+If the page shows a gateway error, it usually means the Lichess API could not be reached
+(for example, due to firewalls, proxies, or missing internet access).
 
 ## High-Level Workflow
 1. **Live game ingestion**

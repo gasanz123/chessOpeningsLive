@@ -37,7 +37,13 @@ class LichessClient:
         if params:
             query = "&".join(f"{key}={value}" for key, value in params.items())
             url = f"{url}?{query}"
-        request = Request(url, headers={"User-Agent": self.user_agent})
+        request = Request(
+            url,
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept": "application/json",
+            },
+        )
         try:
             with urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -191,7 +197,21 @@ def serve_openings(client: LichessClient, port: int, limit: int | None) -> int:
             if self.path not in ("/", "/api/openings"):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            games = list(fetch_openings(client, limit))
+            try:
+                games = list(fetch_openings(client, limit))
+            except RuntimeError as error:
+                message = (
+                    "Unable to reach the Lichess API. "
+                    "Check your internet connection or firewall settings."
+                )
+                body = f"{message}\n\nDetails: {error}\n"
+                response = body.encode("utf-8")
+                self.send_response(HTTPStatus.BAD_GATEWAY)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+                return
             payload = build_openings_payload(games)
             if self.path == "/api/openings":
                 response = json.dumps(payload, indent=2).encode("utf-8")
@@ -263,7 +283,11 @@ def main(argv: list[str]) -> int:
         return serve_openings(client, args.port, args.limit)
 
     while True:
-        games = list(fetch_openings(client, args.limit))
+        try:
+            games = list(fetch_openings(client, args.limit))
+        except RuntimeError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
         if args.json:
             payload = [game.__dict__ for game in games]
             print(json.dumps(payload, indent=2))
