@@ -10,13 +10,6 @@ Chess Openings Live is a concept for a website that organizes **live chess games
 ## Lichess Ingestion (Prototype)
 This repo includes a small script that pulls the current Lichess TV games and groups them by opening.
 
-### Setup
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
 ### Run
 ```bash
 python scripts/lichess_openings.py
@@ -26,6 +19,15 @@ Optional flags:
 - `--poll-interval 30` to refresh every 30 seconds.
 - `--limit 5` to limit the number of TV channels queried.
 - `--json` to emit raw JSON for downstream processing.
+- `--serve` to run a local web server for browsing openings.
+- `--port 8000` to change the server port.
+
+### Open in the Browser
+```bash
+python scripts/lichess_openings.py --serve
+```
+
+Then open http://localhost:8000 to browse openings with active games.
 
 ## High-Level Workflow
 1. **Live game ingestion**
