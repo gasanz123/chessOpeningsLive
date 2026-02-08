@@ -87,6 +87,12 @@ class LichessClient:
             print("DEBUG: Raw TV payload:", file=sys.stderr)
             print(raw_body, file=sys.stderr)
         data = json.loads(raw_body)
+        if "channels" not in data and isinstance(data, dict):
+            return [
+                {**payload, "name": payload.get("name", name)}
+                for name, payload in data.items()
+                if isinstance(payload, dict)
+            ]
         channels = data.get("channels", [])
         if isinstance(channels, dict):
             normalized = []
