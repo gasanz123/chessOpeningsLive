@@ -217,7 +217,17 @@ def fetch_openings_from_broadcast(
         round_ids = round_ids[:limit]
     games: list[LiveGame] = []
     for round_id in round_ids:
-        round_payload = client.fetch_broadcast_round(round_id)
+        try:
+            round_payload = client.fetch_broadcast_round(round_id)
+        except RuntimeError as error:
+            if "HTTP Error 404" in str(error):
+                if client.debug:
+                    print(
+                        f"DEBUG: Skipping missing broadcast round {round_id}",
+                        file=sys.stderr,
+                    )
+                continue
+            raise
         game_ids = extract_round_game_ids(round_payload)
         for game_id in game_ids:
             game_data = client.fetch_game(game_id)
