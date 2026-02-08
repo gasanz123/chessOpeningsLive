@@ -423,7 +423,10 @@ def serve_openings(
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(response)))
                 self.end_headers()
-                self.wfile.write(response)
+                try:
+                    self.wfile.write(response)
+                except BrokenPipeError:
+                    return
                 return
             payload = build_openings_payload(games)
             if self.path == "/api/openings":
@@ -432,14 +435,20 @@ def serve_openings(
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(response)))
                 self.end_headers()
-                self.wfile.write(response)
+                try:
+                    self.wfile.write(response)
+                except BrokenPipeError:
+                    return
                 return
             html = render_html().encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(html)))
             self.end_headers()
-            self.wfile.write(html)
+            try:
+                self.wfile.write(html)
+            except BrokenPipeError:
+                return
 
         def log_message(self, format: str, *args: object) -> None:
             return
