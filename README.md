@@ -36,6 +36,9 @@ If the page shows a gateway error, it usually means the Lichess API could not be
 The browser view refreshes every 30 seconds and includes a filter box so you can quickly
 search openings or player names.
 
+The server also stores cumulative opening counts in a local JSON file and exposes a stats
+page at http://localhost:8000/stats.
+
 If Lichess TV is empty in your region, try the broadcast feed:
 ```bash
 python scripts/lichess_openings.py --serve --source broadcast

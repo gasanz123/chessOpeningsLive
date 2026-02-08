@@ -8,6 +8,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from http import HTTPStatus
 from typing import Iterable
 from urllib.error import HTTPError, URLError
@@ -18,6 +19,7 @@ LICHESS_BROADCASTS_URL = "https://lichess.org/api/broadcast"
 LICHESS_BROADCAST_ROUND_URL = "https://lichess.org/api/broadcast/round/{round_id}"
 LICHESS_GAME_EXPORT = "https://lichess.org/game/export/{game_id}"
 DEFAULT_PORT = 8000
+DEFAULT_STATS_FILE = "opening_stats.json"
 
 
 @dataclass(frozen=True)
@@ -336,6 +338,28 @@ def build_openings_payload(games: Iterable[LiveGame]) -> list[dict]:
     return payload
 
 
+def load_stats(stats_path: Path) -> dict:
+    if not stats_path.exists():
+        return {"updated_at": None, "openings": {}}
+    try:
+        return json.loads(stats_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"updated_at": None, "openings": {}}
+
+
+def update_stats(stats: dict, games: Iterable[LiveGame]) -> dict:
+    openings = stats.setdefault("openings", {})
+    for game in games:
+        key = format_opening_key(game)
+        openings[key] = openings.get(key, 0) + 1
+    stats["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    return stats
+
+
+def save_stats(stats_path: Path, stats: dict) -> None:
+    stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+
+
 def render_html() -> str:
     return """<!doctype html>
 <html lang="en">
@@ -365,6 +389,8 @@ def render_html() -> str:
       .controls input { flex: 1 1 280px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: #fff; }
       .stats { display: flex; gap: 12px; flex-wrap: wrap; }
       .badge { background: var(--accent-soft); color: var(--accent); padding: 6px 10px; border-radius: 999px; font-size: 0.9rem; }
+      .link { color: var(--accent); text-decoration: none; font-weight: 600; }
+      .link:hover { text-decoration: underline; }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
       .opening { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); border: 1px solid var(--border); }
       .opening h2 { margin: 0 0 8px 0; font-size: 1.05rem; }
@@ -390,6 +416,7 @@ def render_html() -> str:
           <span id="summary" class="badge"></span>
           <span id="status" class="muted"></span>
         </div>
+        <a class="link" href="/stats">View opening stats</a>
       </div>
       <div id="openings" class="grid"></div>
     </div>
@@ -461,27 +488,162 @@ def render_html() -> str:
 """
 
 
+def render_stats_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Opening Stats · Chess Openings Live</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f6fb;
+        --card: #ffffff;
+        --text: #1b1f2a;
+        --muted: #5f6b85;
+        --accent: #3558d6;
+        --border: #e3e8f4;
+        --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body { font-family: "Inter", "Segoe UI", sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+      .page { max-width: 960px; margin: 0 auto; padding: 32px 24px 56px; }
+      header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 24px; }
+      h1 { margin: 0; font-size: 1.8rem; }
+      a { color: var(--accent); text-decoration: none; font-weight: 600; }
+      a:hover { text-decoration: underline; }
+      .card { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); border: 1px solid var(--border); }
+      canvas { width: 100%; height: 420px; }
+      .meta { color: var(--muted); margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <h1>Opening stats</h1>
+        <a href="/">Back to live openings</a>
+      </header>
+      <div class="card">
+        <canvas id="chart"></canvas>
+        <div id="updated" class="meta"></div>
+      </div>
+    </div>
+    <script>
+      const canvas = document.getElementById('chart');
+      const ctx = canvas.getContext('2d');
+      const updatedEl = document.getElementById('updated');
+      let latestRows = [];
+
+      function resizeCanvas() {
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * window.devicePixelRatio;
+        canvas.height = rect.height * window.devicePixelRatio;
+        ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+      }
+
+      function drawChart(rows) {
+        resizeCanvas();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (!rows.length) {
+          ctx.fillStyle = '#5f6b85';
+          ctx.font = '16px sans-serif';
+          ctx.fillText('No stats yet. Refresh live openings to collect data.', 16, 32);
+          return;
+        }
+        const padding = 24;
+        const barGap = 8;
+        const barHeight = 22;
+        const maxBars = Math.min(rows.length, 15);
+        const visible = rows.slice(0, maxBars);
+        const maxValue = Math.max(...visible.map(row => row.count), 1);
+        const chartWidth = canvas.getBoundingClientRect().width - padding * 2 - 140;
+        visible.forEach((row, index) => {
+          const y = padding + index * (barHeight + barGap);
+          const barWidth = Math.round((row.count / maxValue) * chartWidth);
+          ctx.fillStyle = '#eef2ff';
+          ctx.fillRect(padding + 140, y, chartWidth, barHeight);
+          ctx.fillStyle = '#3558d6';
+          ctx.fillRect(padding + 140, y, barWidth, barHeight);
+          ctx.fillStyle = '#1b1f2a';
+          ctx.font = '14px sans-serif';
+          ctx.fillText(row.opening, padding, y + 16);
+          ctx.fillStyle = '#5f6b85';
+          ctx.fillText(row.count.toString(), padding + 140 + chartWidth + 8, y + 16);
+        });
+      }
+
+      async function loadStats() {
+        const response = await fetch('/api/stats');
+        const stats = await response.json();
+        const rows = Object.entries(stats.openings || {})
+          .map(([opening, count]) => ({ opening, count }))
+          .sort((a, b) => b.count - a.count);
+        updatedEl.textContent = stats.updated_at ? `Last updated ${stats.updated_at}` : '';
+        latestRows = rows;
+        drawChart(rows);
+      }
+
+      window.addEventListener('resize', () => drawChart(latestRows));
+      loadStats();
+    </script>
+  </body>
+</html>
+"""
+
+
 def serve_openings(
-    client: LichessClient, port: int, limit: int | None, source: str
+    client: LichessClient,
+    port: int,
+    limit: int | None,
+    source: str,
+    stats_path: Path,
 ) -> int:
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path not in ("/", "/api/openings"):
+            if self.path not in ("/", "/api/openings", "/stats", "/api/stats"):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            try:
-                games = fetch_openings(client, limit, source)
-            except RuntimeError as error:
-                message = (
-                    "Unable to reach the Lichess API. "
-                    "Check your internet connection or firewall settings."
-                )
-                body = f"{message}\n\nDetails: {error}\n"
-                response = body.encode("utf-8")
-                self.send_response(HTTPStatus.BAD_GATEWAY)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
+            stats = load_stats(stats_path)
+            games: list[LiveGame] = []
+            if self.path in ("/", "/api/openings"):
+                try:
+                    games = fetch_openings(client, limit, source)
+                    stats = update_stats(stats, games)
+                    save_stats(stats_path, stats)
+                except RuntimeError as error:
+                    message = (
+                        "Unable to reach the Lichess API. "
+                        "Check your internet connection or firewall settings."
+                    )
+                    body = f"{message}\n\nDetails: {error}\n"
+                    response = body.encode("utf-8")
+                    self.send_response(HTTPStatus.BAD_GATEWAY)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(response)))
+                    self.end_headers()
+                    try:
+                        self.wfile.write(response)
+                    except BrokenPipeError:
+                        return
+                    return
+            if self.path == "/stats":
+                html = render_stats_html().encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(html)))
+                self.end_headers()
+                try:
+                    self.wfile.write(html)
+                except BrokenPipeError:
+                    return
+                return
+            if self.path == "/api/stats":
+                response = json.dumps(stats, indent=2).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(response)))
                 self.end_headers()
                 try:
@@ -566,6 +728,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Print raw Lichess API payloads for debugging",
     )
+    parser.add_argument(
+        "--stats-file",
+        type=Path,
+        default=Path(DEFAULT_STATS_FILE),
+        help=f"Path to stats JSON file (default: {DEFAULT_STATS_FILE})",
+    )
     return parser.parse_args(argv)
 
 
@@ -574,11 +742,16 @@ def main(argv: list[str]) -> int:
     client = LichessClient(debug=args.debug)
 
     if args.serve:
-        return serve_openings(client, args.port, args.limit, args.source)
+        return serve_openings(
+            client, args.port, args.limit, args.source, args.stats_file
+        )
 
     while True:
         try:
             games = fetch_openings(client, args.limit, args.source)
+            stats = load_stats(args.stats_file)
+            stats = update_stats(stats, games)
+            save_stats(args.stats_file, stats)
         except RuntimeError as error:
             print(f"Error: {error}", file=sys.stderr)
             return 1
