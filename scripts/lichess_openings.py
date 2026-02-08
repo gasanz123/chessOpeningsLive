@@ -14,6 +14,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 LICHESS_TV_URL = "https://lichess.org/api/tv/channels"
+LICHESS_BROADCASTS_URL = "https://lichess.org/api/broadcast"
+LICHESS_BROADCAST_ROUND_URL = "https://lichess.org/api/broadcast/round/{round_id}"
 LICHESS_GAME_EXPORT = "https://lichess.org/game/export/{game_id}"
 DEFAULT_PORT = 8000
 
@@ -30,10 +32,11 @@ class LiveGame:
 
 
 class LichessClient:
-    def __init__(self) -> None:
+    def __init__(self, *, debug: bool = False) -> None:
         self.user_agent = "ChessOpeningsLive/0.1"
+        self.debug = debug
 
-    def _fetch_json(self, url: str, params: dict[str, str] | None = None) -> dict:
+    def _fetch_text(self, url: str, params: dict[str, str] | None = None) -> str:
         if params:
             query = "&".join(f"{key}={value}" for key, value in params.items())
             url = f"{url}?{query}"
@@ -46,12 +49,44 @@ class LichessClient:
         )
         try:
             with urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return response.read().decode("utf-8")
         except (HTTPError, URLError) as error:
             raise RuntimeError(f"Failed to fetch {url}: {error}") from error
 
+    def _fetch_json(self, url: str, params: dict[str, str] | None = None) -> dict:
+        body = self._fetch_text(url, params=params)
+        return json.loads(body)
+
+    def _fetch_ndjson(self, url: str) -> list[dict]:
+        request = Request(
+            url,
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept": "application/x-ndjson",
+            },
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                body = response.read().decode("utf-8")
+        except (HTTPError, URLError) as error:
+            raise RuntimeError(f"Failed to fetch {url}: {error}") from error
+        if self.debug:
+            print("DEBUG: Raw broadcast payload:", file=sys.stderr)
+            print(body, file=sys.stderr)
+        items = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            items.append(json.loads(line))
+        return items
+
     def fetch_tv_channels(self) -> list[dict]:
-        data = self._fetch_json(LICHESS_TV_URL)
+        raw_body = self._fetch_text(LICHESS_TV_URL)
+        if self.debug:
+            print("DEBUG: Raw TV payload:", file=sys.stderr)
+            print(raw_body, file=sys.stderr)
+        data = json.loads(raw_body)
         channels = data.get("channels", [])
         if isinstance(channels, dict):
             normalized = []
@@ -62,6 +97,12 @@ class LichessClient:
         if isinstance(channels, list):
             return channels
         return []
+
+    def fetch_broadcasts(self) -> list[dict]:
+        return self._fetch_ndjson(LICHESS_BROADCASTS_URL)
+
+    def fetch_broadcast_round(self, round_id: str) -> dict:
+        return self._fetch_json(LICHESS_BROADCAST_ROUND_URL.format(round_id=round_id))
 
     def fetch_game(self, game_id: str) -> dict:
         return self._fetch_json(
@@ -98,16 +139,105 @@ def extract_game_id(channel: dict) -> str | None:
     return None
 
 
-def fetch_openings(client: LichessClient, limit: int | None) -> Iterable[LiveGame]:
+def extract_game_id_from_url(url: str) -> str | None:
+    if not url:
+        return None
+    trimmed = url.rstrip("/")
+    if not trimmed:
+        return None
+    return trimmed.split("/")[-1] or None
+
+
+def fetch_openings_from_tv(client: LichessClient, limit: int | None) -> list[LiveGame]:
     channels = client.fetch_tv_channels()
     if limit is not None:
         channels = channels[:limit]
+    games: list[LiveGame] = []
     for channel in channels:
         game_id = extract_game_id(channel)
         if not game_id:
             continue
         game_data = client.fetch_game(game_id)
-        yield build_live_game(channel, game_data)
+        games.append(build_live_game(channel, game_data))
+    return games
+
+
+def fetch_broadcast_round_ids(broadcasts: list[dict]) -> list[str]:
+    now_ms = int(time.time() * 1000)
+    round_ids: list[str] = []
+    for item in broadcasts:
+        tour = item.get("tour") or {}
+        default_round = tour.get("defaultRoundId")
+        if default_round:
+            round_ids.append(str(default_round))
+        for round_info in item.get("rounds", []) or []:
+            if not isinstance(round_info, dict):
+                continue
+            if round_info.get("finished") is True:
+                continue
+            starts_at = round_info.get("startsAt")
+            if isinstance(starts_at, int) and starts_at > now_ms:
+                continue
+            round_id = round_info.get("id")
+            if round_id:
+                round_ids.append(str(round_id))
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for round_id in round_ids:
+        if round_id in seen:
+            continue
+        seen.add(round_id)
+        deduped.append(round_id)
+    return deduped
+
+
+def extract_round_game_ids(round_payload: dict) -> list[str]:
+    game_ids: list[str] = []
+    games = round_payload.get("games") or round_payload.get("pairings") or []
+    if isinstance(games, list):
+        for game in games:
+            if not isinstance(game, dict):
+                continue
+            game_id = (
+                game.get("id")
+                or game.get("gameId")
+                or extract_game_id_from_url(game.get("url", ""))
+            )
+            if game_id:
+                game_ids.append(str(game_id))
+    return game_ids
+
+
+def fetch_openings_from_broadcast(
+    client: LichessClient, limit: int | None
+) -> list[LiveGame]:
+    broadcasts = client.fetch_broadcasts()
+    round_ids = fetch_broadcast_round_ids(broadcasts)
+    if limit is not None:
+        round_ids = round_ids[:limit]
+    games: list[LiveGame] = []
+    for round_id in round_ids:
+        round_payload = client.fetch_broadcast_round(round_id)
+        game_ids = extract_round_game_ids(round_payload)
+        for game_id in game_ids:
+            game_data = client.fetch_game(game_id)
+            games.append(build_live_game({"name": "Broadcast"}, game_data))
+    return games
+
+
+def fetch_openings(
+    client: LichessClient, limit: int | None, source: str
+) -> list[LiveGame]:
+    if source == "tv":
+        return fetch_openings_from_tv(client, limit)
+    if source == "broadcast":
+        return fetch_openings_from_broadcast(client, limit)
+    if source == "auto":
+        games = fetch_openings_from_tv(client, limit)
+        if games:
+            return games
+        return fetch_openings_from_broadcast(client, limit)
+    raise ValueError(f"Unknown source: {source}")
 
 
 def format_opening_key(game: LiveGame) -> str:
@@ -260,7 +390,9 @@ def render_html() -> str:
 """
 
 
-def serve_openings(client: LichessClient, port: int, limit: int | None) -> int:
+def serve_openings(
+    client: LichessClient, port: int, limit: int | None, source: str
+) -> int:
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class Handler(BaseHTTPRequestHandler):
@@ -269,7 +401,7 @@ def serve_openings(client: LichessClient, port: int, limit: int | None) -> int:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             try:
-                games = list(fetch_openings(client, limit))
+                games = fetch_openings(client, limit, source)
             except RuntimeError as error:
                 message = (
                     "Unable to reach the Lichess API. "
@@ -343,19 +475,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_PORT,
         help=f"Port for --serve (default {DEFAULT_PORT})",
     )
+    parser.add_argument(
+        "--source",
+        choices=("tv", "broadcast", "auto"),
+        default="auto",
+        help="Data source for live games (default: auto)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print raw Lichess API payloads for debugging",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    client = LichessClient()
+    client = LichessClient(debug=args.debug)
 
     if args.serve:
-        return serve_openings(client, args.port, args.limit)
+        return serve_openings(client, args.port, args.limit, args.source)
 
     while True:
         try:
-            games = list(fetch_openings(client, args.limit))
+            games = fetch_openings(client, args.limit, args.source)
         except RuntimeError as error:
             print(f"Error: {error}", file=sys.stderr)
             return 1

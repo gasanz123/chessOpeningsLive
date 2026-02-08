@@ -21,6 +21,8 @@ Optional flags:
 - `--json` to emit raw JSON for downstream processing.
 - `--serve` to run a local web server for browsing openings.
 - `--port 8000` to change the server port.
+- `--source auto|tv|broadcast` to select the Lichess data source (default: `auto`).
+- `--debug` to print raw Lichess API payloads for troubleshooting.
 
 ### Open in the Browser
 ```bash
@@ -33,6 +35,16 @@ If the page shows a gateway error, it usually means the Lichess API could not be
 
 The browser view refreshes every 30 seconds and includes a filter box so you can quickly
 search openings or player names.
+
+If Lichess TV is empty in your region, try the broadcast feed:
+```bash
+python scripts/lichess_openings.py --serve --source broadcast
+```
+
+To capture the raw Lichess TV payload for debugging:
+```bash
+python scripts/lichess_openings.py --debug --limit 1
+```
 
 ## High-Level Workflow
 1. **Live game ingestion**
