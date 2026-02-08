@@ -162,14 +162,14 @@ def fetch_openings_from_tv(client: LichessClient, limit: int | None) -> list[Liv
     return games
 
 
-def fetch_broadcast_round_ids(broadcasts: list[dict]) -> list[str]:
+def fetch_broadcast_rounds(broadcasts: list[dict]) -> list[dict]:
     now_ms = int(time.time() * 1000)
-    round_ids: list[str] = []
+    rounds: list[dict] = []
     for item in broadcasts:
         tour = item.get("tour") or {}
         default_round = tour.get("defaultRoundId")
         if default_round:
-            round_ids.append(str(default_round))
+            rounds.append({"id": str(default_round), "url": None})
         for round_info in item.get("rounds", []) or []:
             if not isinstance(round_info, dict):
                 continue
@@ -180,14 +180,20 @@ def fetch_broadcast_round_ids(broadcasts: list[dict]) -> list[str]:
                 continue
             round_id = round_info.get("id")
             if round_id:
-                round_ids.append(str(round_id))
+                rounds.append(
+                    {
+                        "id": str(round_id),
+                        "url": round_info.get("url"),
+                    }
+                )
     seen: set[str] = set()
-    deduped: list[str] = []
-    for round_id in round_ids:
+    deduped: list[dict] = []
+    for round_info in rounds:
+        round_id = round_info["id"]
         if round_id in seen:
             continue
         seen.add(round_id)
-        deduped.append(round_id)
+        deduped.append(round_info)
     return deduped
 
 
@@ -212,17 +218,29 @@ def extract_round_game_ids(round_payload: dict) -> list[str]:
     return game_ids
 
 
+def fetch_broadcast_round_payload(client: LichessClient, round_info: dict) -> dict:
+    round_id = round_info["id"]
+    round_url = round_info.get("url")
+    if round_url:
+        api_url = round_url.replace("https://lichess.org", "https://lichess.org/api")
+        if client.debug:
+            print(f"DEBUG: Fetching broadcast round via {api_url}", file=sys.stderr)
+        return client._fetch_json(api_url)
+    return client.fetch_broadcast_round(round_id)
+
+
 def fetch_openings_from_broadcast(
     client: LichessClient, limit: int | None
 ) -> list[LiveGame]:
     broadcasts = client.fetch_broadcasts()
-    round_ids = fetch_broadcast_round_ids(broadcasts)
+    round_infos = fetch_broadcast_rounds(broadcasts)
     if limit is not None:
-        round_ids = round_ids[:limit]
+        round_infos = round_infos[:limit]
     games: list[LiveGame] = []
-    for round_id in round_ids:
+    for round_info in round_infos:
+        round_id = round_info["id"]
         try:
-            round_payload = client.fetch_broadcast_round(round_id)
+            round_payload = fetch_broadcast_round_payload(client, round_info)
         except RuntimeError as error:
             if "HTTP Error 404" in str(error):
                 if client.debug:
