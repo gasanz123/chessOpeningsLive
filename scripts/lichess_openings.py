@@ -194,6 +194,8 @@ def fetch_broadcast_round_ids(broadcasts: list[dict]) -> list[str]:
 def extract_round_game_ids(round_payload: dict) -> list[str]:
     game_ids: list[str] = []
     games = round_payload.get("games") or round_payload.get("pairings") or []
+    if isinstance(games, dict):
+        games = list(games.values())
     if isinstance(games, list):
         for game in games:
             if not isinstance(game, dict):
@@ -201,6 +203,8 @@ def extract_round_game_ids(round_payload: dict) -> list[str]:
             game_id = (
                 game.get("id")
                 or game.get("gameId")
+                or game.get("lichessId")
+                or game.get("game", {}).get("id")
                 or extract_game_id_from_url(game.get("url", ""))
             )
             if game_id:
@@ -229,6 +233,11 @@ def fetch_openings_from_broadcast(
                 continue
             raise
         game_ids = extract_round_game_ids(round_payload)
+        if client.debug and not game_ids:
+            print(
+                f"DEBUG: No game IDs found in broadcast round {round_id}",
+                file=sys.stderr,
+            )
         for game_id in game_ids:
             game_data = client.fetch_game(game_id)
             games.append(build_live_game({"name": "Broadcast"}, game_data))
