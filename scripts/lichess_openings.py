@@ -311,7 +311,12 @@ def build_openings_payload(games: Iterable[LiveGame]) -> list[dict]:
 
     payload = []
     for opening, opening_games in sorted(
-        grouped.items(), key=lambda item: len(item[1]), reverse=True
+        grouped.items(),
+        key=lambda item: (
+            item[0].lower().startswith("unknown"),
+            -len(item[1]),
+            item[0].lower(),
+        ),
     ):
         payload.append(
             {
@@ -339,32 +344,55 @@ def render_html() -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Chess Openings Live</title>
     <style>
-      body { font-family: sans-serif; margin: 32px; background: #f7f7f9; }
-      h1 { margin-bottom: 8px; }
-      .meta { color: #555; margin-bottom: 24px; }
-      .controls { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }
-      .controls input { padding: 8px 10px; border-radius: 6px; border: 1px solid #ccc; width: 280px; }
-      .opening { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-      .opening h2 { margin: 0 0 8px 0; font-size: 1.1rem; }
-      .count { color: #666; font-weight: normal; }
+      :root {
+        color-scheme: light;
+        --bg: #f4f6fb;
+        --card: #ffffff;
+        --text: #1b1f2a;
+        --muted: #5f6b85;
+        --accent: #3558d6;
+        --accent-soft: #eef2ff;
+        --border: #e3e8f4;
+        --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body { font-family: "Inter", "Segoe UI", sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+      .page { max-width: 960px; margin: 0 auto; padding: 32px 24px 56px; }
+      header { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+      h1 { margin: 0; font-size: 2rem; }
+      .meta { color: var(--muted); margin: 0; }
+      .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 20px 0; }
+      .controls input { flex: 1 1 280px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: #fff; }
+      .stats { display: flex; gap: 12px; flex-wrap: wrap; }
+      .badge { background: var(--accent-soft); color: var(--accent); padding: 6px 10px; border-radius: 999px; font-size: 0.9rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+      .opening { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); border: 1px solid var(--border); }
+      .opening h2 { margin: 0 0 8px 0; font-size: 1.05rem; }
+      .count { color: var(--muted); font-weight: normal; }
       ul { margin: 0; padding-left: 18px; }
-      li { margin-bottom: 6px; }
-      a { color: #1a4ae0; text-decoration: none; }
+      li { margin-bottom: 8px; }
+      a { color: var(--accent); text-decoration: none; }
       a:hover { text-decoration: underline; }
-      .channel { color: #666; }
-      .muted { color: #777; }
-      .error { background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 8px; }
+      .channel { color: var(--muted); font-size: 0.9rem; }
+      .muted { color: var(--muted); }
+      .error { background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 10px; }
     </style>
   </head>
   <body>
-    <h1>Chess Openings Live</h1>
-    <p class="meta">Live games grouped by opening (Lichess TV).</p>
-    <div class="controls">
-      <input id="filter" type="text" placeholder="Filter openings or players" />
-      <span id="summary" class="muted"></span>
+    <div class="page">
+      <header>
+        <h1>Chess Openings Live</h1>
+        <p class="meta">Live games grouped by opening (Lichess TV).</p>
+      </header>
+      <div class="controls">
+        <input id="filter" type="text" placeholder="Filter openings or players" />
+        <div class="stats">
+          <span id="summary" class="badge"></span>
+          <span id="status" class="muted"></span>
+        </div>
+      </div>
+      <div id="openings" class="grid"></div>
     </div>
-    <div id="status" class="muted">Loading live games…</div>
-    <div id="openings"></div>
     <script>
       const state = { openings: [], filter: '' };
       const openingsEl = document.getElementById('openings');
