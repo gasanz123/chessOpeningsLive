@@ -100,13 +100,12 @@
     </div>
     <script>
       // CORS proxy for Lichess API calls
-      // Note: cors-anywhere.herokuapp.com requires a one-time visit to https://cors-anywhere.herokuapp.com/corsdemo
-      const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/';
-      
-      // Alternative CORS proxies in case the main one is down
-      const ALTERNATIVE_PROXIES = [
+      // Using multiple reliable CORS proxies with fallback
+      const CORS_PROXIES = [
         'https://corsproxy.io/?',
         'https://api.allorigins.win/raw?url=',
+        'https://cors.bridged.cc/',
+        'https://thingproxy.freeboard.io/fetch/',
       ];
       const LICHESS_TV_URL = 'https://lichess.org/api/tv/channels';
       const LICHESS_GAME_URL = 'https://lichess.org/game/export/';
@@ -159,12 +158,22 @@
 
       // Helper function to fetch with CORS proxy fallback
       async function fetchWithProxy(url, options = {}) {
-        const proxies = [CORS_PROXY, ...ALTERNATIVE_PROXIES];
         let lastError;
         
-        for (const proxy of proxies) {
+        // Try each proxy in order
+        for (const proxy of CORS_PROXIES) {
           try {
-            const proxyUrl = proxy.includes('?url=') ? `${proxy}${encodeURIComponent(url)}` : `${proxy}${url}`;
+            let proxyUrl;
+            
+            // Handle different proxy URL formats
+            if (proxy.includes('?url=')) {
+              proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+            } else if (proxy.endsWith('/fetch/')) {
+              proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+            } else {
+              proxyUrl = `${proxy}${url}`;
+            }
+            
             const response = await fetch(proxyUrl, options);
             if (response.ok) {
               return response;
@@ -175,7 +184,7 @@
           }
         }
         
-        // If all proxies fail, try without proxy (might work for some APIs)
+        // If all proxies fail, try without proxy (might work for some APIs like explorer)
         try {
           const response = await fetch(url, options);
           if (response.ok) {
@@ -185,7 +194,7 @@
           lastError = error;
         }
         
-        throw lastError || new Error('All fetch attempts failed');
+        throw lastError || new Error('All fetch attempts failed - CORS proxies may be down');
       }
 
       // ── TV feed ────────────────────────────────────────────────────────────
