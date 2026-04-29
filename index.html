@@ -100,12 +100,10 @@
     </div>
     <script>
       // CORS proxy for Lichess API calls
-      // Using multiple reliable CORS proxies with fallback
+      // Using simple JSONP-style proxy that doesn't have header restrictions
       const CORS_PROXIES = [
-        'https://corsproxy.io/?',
         'https://api.allorigins.win/raw?url=',
-        'https://cors.bridged.cc/',
-        'https://thingproxy.freeboard.io/fetch/',
+        'https://corsproxy.io/?',
       ];
       const LICHESS_TV_URL = 'https://lichess.org/api/tv/channels';
       const LICHESS_GAME_URL = 'https://lichess.org/game/export/';
@@ -157,7 +155,7 @@
       }
 
       // Helper function to fetch with CORS proxy fallback
-      async function fetchWithProxy(url, options = {}, apiKey = null) {
+      async function fetchWithProxy(url, options = {}) {
         let lastError;
         
         // Try each proxy in order
@@ -168,15 +166,15 @@
             // Handle different proxy URL formats
             if (proxy.includes('?url=')) {
               proxyUrl = `${proxy}${encodeURIComponent(url)}`;
-            } else if (proxy.endsWith('/fetch/')) {
-              proxyUrl = `${proxy}${encodeURIComponent(url)}`;
             } else {
               proxyUrl = `${proxy}${url}`;
             }
             
-            // Remove Authorization header for CORS proxies (they don't allow it)
-            const proxyOptions = { ...options };
-            delete proxyOptions.headers?.Authorization;
+            // Use minimal headers to avoid CORS issues
+            const proxyOptions = {
+              method: options.method || 'GET',
+              body: options.body,
+            };
             
             const response = await fetch(proxyUrl, proxyOptions);
             if (response.ok) {
@@ -188,14 +186,9 @@
           }
         }
         
-        // If all proxies fail, try without proxy and with API key
+        // If all proxies fail, try without proxy
         try {
-          const directOptions = { ...options };
-          if (apiKey) {
-            directOptions.headers = directOptions.headers || {};
-            directOptions.headers.Authorization = `Bearer ${apiKey}`;
-          }
-          const response = await fetch(url, directOptions);
+          const response = await fetch(url, options);
           if (response.ok) {
             return response;
           }
@@ -278,10 +271,9 @@
           }));
       }
 
-      async function fetchGame(gameId, channelName, apiKey = null) {
-        const headers = { 'Accept': 'application/json' };
+      async function fetchGame(gameId, channelName) {
         const url = `${LICHESS_GAME_URL}${gameId}?moves=false&opening=true&clocks=false&evals=false`;
-        const res = await fetchWithProxy(url, { headers }, apiKey);
+        const res = await fetchWithProxy(url);
         if (!res.ok) return null;
         const data = await res.json();
         const opening = data.opening || {};
@@ -300,13 +292,7 @@
         statusEl.textContent = 'Refreshing…';
         statusEl.className = 'muted';
         try {
-          const apiKey = apiKeyEl.value.trim();
-          const headers = { 'Accept': 'application/json' };
-          if (apiKey) {
-            headers['Authorization'] = `Bearer ${apiKey}`;
-          }
-          
-          const tvRes = await fetchWithProxy(LICHESS_TV_URL, { headers }, apiKey);
+          const tvRes = await fetchWithProxy(LICHESS_TV_URL);
           if (!tvRes.ok) throw new Error(`Lichess TV API error (${tvRes.status})`);
           const tvData = await tvRes.json();
 
@@ -318,7 +304,7 @@
           }
 
           const gameResults = await Promise.all(
-            channels.map(ch => fetchGame(ch.gameId, ch.name, apiKey).catch(() => null))
+            channels.map(ch => fetchGame(ch.gameId, ch.name).catch(() => null))
           );
           const games = gameResults.filter(Boolean);
           state.openings = buildOpeningsPayload(games);
@@ -391,12 +377,6 @@
         searchResultsEl.innerHTML = '';
 
         try {
-          const apiKey = apiKeyEl.value.trim();
-          const headers = { 'Accept': 'application/json' };
-          if (apiKey) {
-            headers['Authorization'] = `Bearer ${apiKey}`;
-          }
-
           // Step 1: get recent game IDs from the Lichess Opening Explorer.
           const now = new Date();
           const since = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -405,15 +385,10 @@
             `&recentGames=8&topGames=0` +
             `&speeds=blitz,rapid,classical` +
             `&since=${since}`;
-          // The ratings filter may require a Lichess OAuth token; fall back to an
-          // unfiltered query if the API returns 401.
-          let explorerRes = await fetchWithProxy(
-            `${explorerBase}&ratings=1600,1800,2000,2200,2500`,
-            { headers },
-            apiKey
-          );
+          
+          let explorerRes = await fetchWithProxy(`${explorerBase}&ratings=1600,1800,2000,2200,2500`);
           if (explorerRes.status === 401) {
-            explorerRes = await fetchWithProxy(explorerBase, { headers }, apiKey);
+            explorerRes = await fetchWithProxy(explorerBase);
           }
           if (!explorerRes.ok) throw new Error(`Explorer API error (${explorerRes.status})`);
           const explorerData = await explorerRes.json();
@@ -426,18 +401,10 @@
 
           // Step 2: bulk-fetch game details to check live status and get ratings.
           const ids = recentGames.map(g => g.id).filter(Boolean).join(',');
-          const exportHeaders = {
-            'Content-Type': 'text/plain',
-            'Accept': 'application/x-ndjson',
-          };
-          if (apiKey) {
-            exportHeaders['Authorization'] = `Bearer ${apiKey}`;
-          }
           const exportRes = await fetchWithProxy(LICHESS_EXPORT_IDS_URL, {
             method: 'POST',
-            headers: exportHeaders,
             body: ids,
-          }, apiKey);
+          });
           if (!exportRes.ok) throw new Error(`Export API error (${exportRes.status})`);
 
           const ndjson = await exportRes.text();
