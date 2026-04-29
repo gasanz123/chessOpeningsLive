@@ -417,6 +417,7 @@ def search_live_games_by_opening(client: LichessClient, opening_name: str) -> li
                 "status": game.get("status") or "",
                 "opening": opening_data.get("name") or canonical_name,
                 "eco": opening_data.get("eco") or "",
+                "createdAt": game.get("createdAt") or 0,
             }
         )
 

@@ -413,7 +413,7 @@
 
         searchResultsEl.innerHTML = sorted.map(game => {
           const statusBadge = game.isLive
-            ? '<span class="live-badge">● LIVE</span>'
+            ? '<span class="live-badge">&#9679; LIVE</span>'
             : '<span class="recent-badge">Recent</span>';
           const openingLabel = game.eco
             ? `${htmlEscape(game.eco)} ${htmlEscape(game.opening)}`
