@@ -323,13 +323,20 @@
           // Step 1: get recent game IDs from the Lichess Opening Explorer.
           const now = new Date();
           const since = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-          const explorerUrl =
+          const explorerBase =
             `${LICHESS_EXPLORER_URL}?play=${match.moves}` +
-            `&recentGames=15&topGames=0` +
+            `&recentGames=8&topGames=0` +
             `&speeds=blitz,rapid,classical` +
-            `&ratings=1600,1800,2000,2200,2500` +
             `&since=${since}`;
-          const explorerRes = await fetch(explorerUrl, { headers: { 'Accept': 'application/json' } });
+          // The ratings filter may require a Lichess OAuth token; fall back to an
+          // unfiltered query if the API returns 401.
+          let explorerRes = await fetch(
+            `${explorerBase}&ratings=1600,1800,2000,2200,2500`,
+            { headers: { 'Accept': 'application/json' } },
+          );
+          if (explorerRes.status === 401) {
+            explorerRes = await fetch(explorerBase, { headers: { 'Accept': 'application/json' } });
+          }
           if (!explorerRes.ok) throw new Error(`Explorer API error (${explorerRes.status})`);
           const explorerData = await explorerRes.json();
           const recentGames = explorerData.recentGames || [];
