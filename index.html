@@ -38,6 +38,32 @@
       .muted { color: var(--muted); }
       .error { background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 10px; color: #a00; }
       .loading { color: var(--muted); font-style: italic; }
+      /* Opening name button in TV grid */
+      .opening-name-btn { background: none; border: none; padding: 0; font: inherit; font-size: 1.05rem; font-weight: 600; color: var(--accent); cursor: pointer; text-align: left; }
+      .opening-name-btn:hover { text-decoration: underline; }
+      /* Search section */
+      .search-section { margin-top: 48px; }
+      .search-section > h2 { margin: 0 0 4px 0; font-size: 1.3rem; }
+      .search-section > .section-meta { color: var(--muted); margin: 0 0 16px 0; font-size: 0.95rem; }
+      .search-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+      .search-controls input { flex: 1 1 260px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: #fff; font-size: 1rem; }
+      .btn { padding: 10px 20px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+      .btn:hover { background: #2748c2; }
+      .btn:disabled { background: var(--muted); cursor: not-allowed; }
+      .sort-toggle { display: flex; gap: 6px; flex-shrink: 0; }
+      .sort-btn { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-size: 0.9rem; color: var(--text); }
+      .sort-btn.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+      .search-status { color: var(--muted); font-size: 0.9rem; margin: 0 0 12px 0; min-height: 1.3em; }
+      .search-status.error { color: #a00; }
+      .search-results { display: flex; flex-direction: column; gap: 10px; }
+      .game-card { background: var(--card); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .game-card-left { min-width: 0; }
+      .game-players { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .opening-label { color: var(--muted); font-size: 0.85rem; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .game-card-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+      .rating-badge { background: var(--accent-soft); color: var(--accent); padding: 4px 9px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+      .live-badge { background: #fef2f2; color: #b91c1c; padding: 4px 9px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; white-space: nowrap; }
+      .recent-badge { background: #f0fdf4; color: #166534; padding: 4px 9px; border-radius: 6px; font-size: 0.8rem; white-space: nowrap; }
     </style>
   </head>
   <body>
@@ -54,10 +80,74 @@
         </div>
       </div>
       <div id="openings" class="grid"><p class="loading">Loading live games…</p></div>
+
+      <section class="search-section">
+        <h2>Search Live Games by Opening</h2>
+        <p class="section-meta">Find Lichess games for any opening, sorted by strongest players. Click an opening name above to pre-fill.</p>
+        <div class="search-controls">
+          <input id="opening-input" type="text" list="opening-suggestions" placeholder="e.g. King's Gambit, Sicilian Defense…" autocomplete="off" />
+          <datalist id="opening-suggestions"></datalist>
+          <button id="search-btn" class="btn">Search</button>
+          <div class="sort-toggle">
+            <button class="sort-btn active" data-sort="rating">Avg Rating ↓</button>
+            <button class="sort-btn" data-sort="recent">Most Recent</button>
+          </div>
+        </div>
+        <p id="search-status" class="search-status"></p>
+        <div id="search-results" class="search-results"></div>
+      </section>
     </div>
     <script>
       const LICHESS_TV_URL = 'https://lichess.org/api/tv/channels';
       const LICHESS_GAME_URL = 'https://lichess.org/game/export/';
+      const LICHESS_EXPLORER_URL = 'https://explorer.lichess.ovh/lichess';
+      const LICHESS_EXPORT_IDS_URL = 'https://lichess.org/api/games/export/_ids';
+
+      // Maps opening names to UCI move sequences for the Lichess Explorer API.
+      const OPENING_MOVES = {
+        "Alekhine's Defense":      "e2e4,g8f6",
+        "Benoni Defense":          "d2d4,g8f6,c2c4,c7c5,d4d5",
+        "Bird's Opening":          "f2f4",
+        "Budapest Gambit":         "d2d4,g8f6,c2c4,e7e5",
+        "Caro-Kann Defense":       "e2e4,c7c6",
+        "Catalan Opening":         "d2d4,g8f6,c2c4,e7e6,g2g3",
+        "Dutch Defense":           "d2d4,f7f5",
+        "English Opening":         "c2c4",
+        "Four Knights Game":       "e2e4,e7e5,g1f3,b8c6,b1c3,g8f6",
+        "French Defense":          "e2e4,e7e6",
+        "Grünfeld Defense":        "d2d4,g8f6,c2c4,g7g6,b1c3,d7d5",
+        "Italian Game":            "e2e4,e7e5,g1f3,b8c6,f1c4",
+        "King's Gambit":           "e2e4,e7e5,f2f4",
+        "King's Indian Defense":   "d2d4,g8f6,c2c4,g7g6,b1c3,f8g7",
+        "London System":           "d2d4,d7d5,g1f3,g8f6,c1f4",
+        "Nimzo-Indian Defense":    "d2d4,g8f6,c2c4,e7e6,b1c3,f8b4",
+        "Petrov's Defense":        "e2e4,e7e5,g1f3,g8f6",
+        "Pirc Defense":            "e2e4,d7d6,d2d4,g8f6,b1c3,g7g6",
+        "Queen's Gambit":          "d2d4,d7d5,c2c4",
+        "Queen's Indian Defense":  "d2d4,g8f6,c2c4,e7e6,g1f3,b7b6",
+        "Réti Opening":            "g1f3",
+        "Ruy Lopez":               "e2e4,e7e5,g1f3,b8c6,f1b5",
+        "Scandinavian Defense":    "e2e4,d7d5",
+        "Scotch Game":             "e2e4,e7e5,g1f3,b8c6,d2d4",
+        "Semi-Slav Defense":       "d2d4,d7d5,c2c4,c7c6,b1c3,g8f6,g1f3,e7e6",
+        "Sicilian Defense":        "e2e4,c7c5",
+        "Sicilian Dragon":         "e2e4,c7c5,g1f3,d7d6,d2d4,c5d4,f3d4,g8f6,b1c3,g7g6",
+        "Sicilian Najdorf":        "e2e4,c7c5,g1f3,d7d6,d2d4,c5d4,f3d4,g8f6,b1c3,a7a6",
+        "Sicilian Scheveningen":   "e2e4,c7c5,g1f3,d7d6,d2d4,c5d4,f3d4,g8f6,b1c3,e7e6",
+        "Slav Defense":            "d2d4,d7d5,c2c4,c7c6",
+        "Vienna Game":             "e2e4,e7e5,b1c3",
+      };
+
+      function htmlEscape(str) {
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      // ── TV feed ────────────────────────────────────────────────────────────
 
       const state = { openings: [], filter: '' };
       const openingsEl = document.getElementById('openings');
@@ -78,11 +168,11 @@
         } else {
           openingsEl.innerHTML = filtered.map(opening => {
             const gamesHtml = opening.games.map(game => (
-              `<li><a href="${game.url}" target="_blank" rel="noopener noreferrer">${game.players}</a> <span class="channel">[${game.channel}]</span></li>`
+              `<li><a href="${htmlEscape(game.url)}" target="_blank" rel="noopener noreferrer">${htmlEscape(game.players)}</a> <span class="channel">[${htmlEscape(game.channel)}]</span></li>`
             )).join('');
             return `
               <section class="opening">
-                <h2>${opening.opening} <span class="count">(${opening.count})</span></h2>
+                <h2><button class="opening-name-btn" data-name="${htmlEscape(opening.opening)}">${htmlEscape(opening.opening)}</button> <span class="count">(${opening.count})</span></h2>
                 <ul>${gamesHtml}</ul>
               </section>
             `;
@@ -91,6 +181,16 @@
         const totalGames = filtered.reduce((sum, o) => sum + o.count, 0);
         summaryEl.textContent = `${filtered.length} openings · ${totalGames} games`;
       }
+
+      // Click on an opening name in the TV grid → pre-fill and trigger search.
+      openingsEl.addEventListener('click', event => {
+        const btn = event.target.closest('.opening-name-btn');
+        if (!btn) return;
+        const name = btn.dataset.name;
+        openingInputEl.value = name;
+        document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
+        triggerSearch();
+      });
 
       function buildOpeningsPayload(games) {
         const grouped = {};
@@ -172,6 +272,191 @@
 
       refresh();
       setInterval(refresh, 30000);
+
+      // ── Opening search ─────────────────────────────────────────────────────
+
+      const openingInputEl = document.getElementById('opening-input');
+      const searchBtnEl = document.getElementById('search-btn');
+      const searchStatusEl = document.getElementById('search-status');
+      const searchResultsEl = document.getElementById('search-results');
+
+      const searchState = { results: [], sort: 'rating', refreshTimer: null };
+
+      // Populate the datalist with all known opening names.
+      const datalist = document.getElementById('opening-suggestions');
+      for (const name of Object.keys(OPENING_MOVES).sort()) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        datalist.appendChild(opt);
+      }
+
+      function resolveOpeningMoves(query) {
+        if (!query) return null;
+        // Exact match first.
+        if (OPENING_MOVES[query]) return { name: query, moves: OPENING_MOVES[query] };
+        // Case-insensitive substring match.
+        const lower = query.toLowerCase();
+        for (const [name, moves] of Object.entries(OPENING_MOVES)) {
+          if (name.toLowerCase().includes(lower)) return { name, moves };
+        }
+        return null;
+      }
+
+      async function searchOpenings() {
+        const query = openingInputEl.value.trim();
+        if (!query) return;
+
+        const match = resolveOpeningMoves(query);
+        if (!match) {
+          searchStatusEl.textContent = `Opening "${query}" not found. Try one of the suggestions.`;
+          searchStatusEl.className = 'search-status error';
+          searchResultsEl.innerHTML = '';
+          return;
+        }
+
+        searchBtnEl.disabled = true;
+        searchStatusEl.className = 'search-status';
+        searchStatusEl.textContent = `Searching for ${match.name}…`;
+        searchResultsEl.innerHTML = '';
+
+        try {
+          // Step 1: get recent game IDs from the Lichess Opening Explorer.
+          const now = new Date();
+          const since = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          const explorerUrl =
+            `${LICHESS_EXPLORER_URL}?play=${match.moves}` +
+            `&recentGames=15&topGames=0` +
+            `&speeds=blitz,rapid,classical` +
+            `&ratings=1600,1800,2000,2200,2500` +
+            `&since=${since}`;
+          const explorerRes = await fetch(explorerUrl, { headers: { 'Accept': 'application/json' } });
+          if (!explorerRes.ok) throw new Error(`Explorer API error (${explorerRes.status})`);
+          const explorerData = await explorerRes.json();
+          const recentGames = explorerData.recentGames || [];
+
+          if (!recentGames.length) {
+            searchStatusEl.textContent = `No recent games found for "${match.name}" this month.`;
+            return;
+          }
+
+          // Step 2: bulk-fetch game details to check live status and get ratings.
+          const ids = recentGames.map(g => g.id).filter(Boolean).join(',');
+          const exportRes = await fetch(LICHESS_EXPORT_IDS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain', 'Accept': 'application/x-ndjson' },
+            body: ids,
+          });
+          if (!exportRes.ok) throw new Error(`Export API error (${exportRes.status})`);
+
+          const ndjson = await exportRes.text();
+          const games = ndjson.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+
+          // Step 3: build result objects with rating and live-status info.
+          searchState.results = games.map(game => {
+            const white = (game.players || {}).white || {};
+            const black = (game.players || {}).black || {};
+            const whiteRating = white.rating || 0;
+            const blackRating = black.rating || 0;
+            const opening = game.opening || {};
+            return {
+              id: game.id || '',
+              url: `https://lichess.org/${game.id || ''}`,
+              white: (white.user && white.user.name) || 'Anonymous',
+              whiteRating,
+              black: (black.user && black.user.name) || 'Anonymous',
+              blackRating,
+              avgRating: whiteRating && blackRating ? Math.round((whiteRating + blackRating) / 2) : (whiteRating || blackRating),
+              isLive: game.status === 'started',
+              opening: opening.name || match.name,
+              eco: opening.eco || '',
+              createdAt: game.createdAt || 0,
+            };
+          });
+
+          renderSearchResults();
+
+          const liveCount = searchState.results.filter(g => g.isLive).length;
+          if (liveCount > 0) {
+            searchStatusEl.textContent =
+              `${liveCount} live game${liveCount !== 1 ? 's' : ''} · ${searchState.results.length} total recent · auto-refreshes every 30 s`;
+          } else {
+            searchStatusEl.textContent =
+              `No live games currently — showing ${searchState.results.length} most recent · auto-refreshes every 30 s`;
+          }
+
+          // Auto-refresh the search results every 30 s.
+          if (searchState.refreshTimer) clearInterval(searchState.refreshTimer);
+          searchState.refreshTimer = setInterval(searchOpenings, 30000);
+        } catch (err) {
+          searchStatusEl.textContent = `Error: ${err.message}`;
+          searchStatusEl.className = 'search-status error';
+        } finally {
+          searchBtnEl.disabled = false;
+        }
+      }
+
+      function renderSearchResults() {
+        if (!searchState.results.length) {
+          searchResultsEl.innerHTML = '<p class="muted">No games found.</p>';
+          return;
+        }
+
+        const sorted = [...searchState.results].sort((a, b) => {
+          if (searchState.sort === 'rating') {
+            // Live games first, then by avg rating descending.
+            if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+            return b.avgRating - a.avgRating;
+          }
+          // Most recent first.
+          return b.createdAt - a.createdAt;
+        });
+
+        searchResultsEl.innerHTML = sorted.map(game => {
+          const statusBadge = game.isLive
+            ? '<span class="live-badge">&#9679; LIVE</span>'
+            : '<span class="recent-badge">Recent</span>';
+          const openingLabel = game.eco
+            ? `${htmlEscape(game.eco)} ${htmlEscape(game.opening)}`
+            : htmlEscape(game.opening);
+          const players =
+            `${htmlEscape(game.white)} (${game.whiteRating}) vs ${htmlEscape(game.black)} (${game.blackRating})`;
+          return `
+            <div class="game-card">
+              <div class="game-card-left">
+                <div class="game-players">
+                  <a href="${htmlEscape(game.url)}" target="_blank" rel="noopener noreferrer">${players}</a>
+                </div>
+                <div class="opening-label">${openingLabel}</div>
+              </div>
+              <div class="game-card-right">
+                <span class="rating-badge">⭐ ${game.avgRating}</span>
+                ${statusBadge}
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Sort toggle buttons.
+      document.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          searchState.sort = btn.dataset.sort;
+          renderSearchResults();
+        });
+      });
+
+      function triggerSearch() {
+        if (searchState.refreshTimer) {
+          clearInterval(searchState.refreshTimer);
+          searchState.refreshTimer = null;
+        }
+        searchOpenings();
+      }
+
+      searchBtnEl.addEventListener('click', triggerSearch);
+      openingInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') triggerSearch(); });
     </script>
   </body>
 </html>
