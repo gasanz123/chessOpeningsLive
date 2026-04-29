@@ -387,7 +387,8 @@ def search_live_games_by_opening(client: LichessClient, opening_name: str) -> li
             f"{explorer_base}&ratings=1600,1800,2000,2200,2500"
         )
     except RuntimeError as exc:
-        if "401" not in str(exc):
+        cause = exc.__cause__
+        if not (isinstance(cause, HTTPError) and cause.code == 401):
             raise
         explorer_data = client._fetch_json(explorer_base)
     recent_games = explorer_data.get("recentGames") or []
