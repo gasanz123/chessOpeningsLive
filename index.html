@@ -157,7 +157,7 @@
       }
 
       // Helper function to fetch with CORS proxy fallback
-      async function fetchWithProxy(url, options = {}) {
+      async function fetchWithProxy(url, options = {}, apiKey = null) {
         let lastError;
         
         // Try each proxy in order
@@ -174,7 +174,11 @@
               proxyUrl = `${proxy}${url}`;
             }
             
-            const response = await fetch(proxyUrl, options);
+            // Remove Authorization header for CORS proxies (they don't allow it)
+            const proxyOptions = { ...options };
+            delete proxyOptions.headers?.Authorization;
+            
+            const response = await fetch(proxyUrl, proxyOptions);
             if (response.ok) {
               return response;
             }
@@ -184,9 +188,14 @@
           }
         }
         
-        // If all proxies fail, try without proxy (might work for some APIs like explorer)
+        // If all proxies fail, try without proxy and with API key
         try {
-          const response = await fetch(url, options);
+          const directOptions = { ...options };
+          if (apiKey) {
+            directOptions.headers = directOptions.headers || {};
+            directOptions.headers.Authorization = `Bearer ${apiKey}`;
+          }
+          const response = await fetch(url, directOptions);
           if (response.ok) {
             return response;
           }
@@ -271,11 +280,8 @@
 
       async function fetchGame(gameId, channelName, apiKey = null) {
         const headers = { 'Accept': 'application/json' };
-        if (apiKey) {
-          headers['Authorization'] = `Bearer ${apiKey}`;
-        }
         const url = `${LICHESS_GAME_URL}${gameId}?moves=false&opening=true&clocks=false&evals=false`;
-        const res = await fetchWithProxy(url, { headers });
+        const res = await fetchWithProxy(url, { headers }, apiKey);
         if (!res.ok) return null;
         const data = await res.json();
         const opening = data.opening || {};
@@ -300,7 +306,7 @@
             headers['Authorization'] = `Bearer ${apiKey}`;
           }
           
-          const tvRes = await fetchWithProxy(LICHESS_TV_URL, { headers });
+          const tvRes = await fetchWithProxy(LICHESS_TV_URL, { headers }, apiKey);
           if (!tvRes.ok) throw new Error(`Lichess TV API error (${tvRes.status})`);
           const tvData = await tvRes.json();
 
@@ -404,9 +410,10 @@
           let explorerRes = await fetchWithProxy(
             `${explorerBase}&ratings=1600,1800,2000,2200,2500`,
             { headers },
+            apiKey
           );
           if (explorerRes.status === 401) {
-            explorerRes = await fetchWithProxy(explorerBase, { headers });
+            explorerRes = await fetchWithProxy(explorerBase, { headers }, apiKey);
           }
           if (!explorerRes.ok) throw new Error(`Explorer API error (${explorerRes.status})`);
           const explorerData = await explorerRes.json();
@@ -430,7 +437,7 @@
             method: 'POST',
             headers: exportHeaders,
             body: ids,
-          });
+          }, apiKey);
           if (!exportRes.ok) throw new Error(`Export API error (${exportRes.status})`);
 
           const ndjson = await exportRes.text();
