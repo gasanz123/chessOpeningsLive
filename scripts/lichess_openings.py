@@ -373,15 +373,24 @@ def search_live_games_by_opening(client: LichessClient, opening_name: str) -> li
     canonical_name, moves = resolved
 
     # Query the explorer for recent games of this opening.
+    # The ratings filter may require a Lichess OAuth token; fall back to an
+    # unfiltered query if the API returns 401.
     now = time.strftime("%Y-%m")
-    explorer_url = (
+    explorer_base = (
         f"{LICHESS_EXPLORER_URL}?play={moves}"
-        f"&recentGames=15&topGames=0"
+        f"&recentGames=8&topGames=0"
         f"&speeds=blitz,rapid,classical"
-        f"&ratings=1600,1800,2000,2200,2500"
         f"&since={now}"
     )
-    explorer_data = client._fetch_json(explorer_url)
+    try:
+        explorer_data = client._fetch_json(
+            f"{explorer_base}&ratings=1600,1800,2000,2200,2500"
+        )
+    except RuntimeError as exc:
+        cause = exc.__cause__
+        if not (isinstance(cause, HTTPError) and cause.code == 401):
+            raise
+        explorer_data = client._fetch_json(explorer_base)
     recent_games = explorer_data.get("recentGames") or []
     game_ids = [g["id"] for g in recent_games if g.get("id")]
     if not game_ids:
