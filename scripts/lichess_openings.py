@@ -71,21 +71,22 @@ class LiveGame:
 
 
 class LichessClient:
-    def __init__(self, *, debug: bool = False) -> None:
+    def __init__(self, *, debug: bool = False, api_key: str | None = None) -> None:
         self.user_agent = "ChessOpeningsLive/0.1"
         self.debug = debug
+        self.api_key = api_key
 
     def _fetch_text(self, url: str, params: dict[str, str] | None = None) -> str:
         if params:
             query = "&".join(f"{key}={value}" for key, value in params.items())
             url = f"{url}?{query}"
-        request = Request(
-            url,
-            headers={
-                "User-Agent": self.user_agent,
-                "Accept": "application/json",
-            },
-        )
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        request = Request(url, headers=headers)
         try:
             with urlopen(request, timeout=10) as response:
                 return response.read().decode("utf-8")
@@ -97,13 +98,13 @@ class LichessClient:
         return json.loads(body)
 
     def _fetch_ndjson(self, url: str) -> list[dict]:
-        request = Request(
-            url,
-            headers={
-                "User-Agent": self.user_agent,
-                "Accept": "application/x-ndjson",
-            },
-        )
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "application/x-ndjson",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        request = Request(url, headers=headers)
         try:
             with urlopen(request, timeout=10) as response:
                 body = response.read().decode("utf-8")
@@ -122,14 +123,17 @@ class LichessClient:
 
     def _fetch_post_ndjson(self, url: str, body: str) -> list[dict]:
         """POST *body* and parse the NDJSON response."""
+        headers = {
+            "User-Agent": self.user_agent,
+            "Content-Type": "text/plain",
+            "Accept": "application/x-ndjson",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         request = Request(
             url,
             data=body.encode("utf-8"),
-            headers={
-                "User-Agent": self.user_agent,
-                "Content-Type": "text/plain",
-                "Accept": "application/x-ndjson",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -588,6 +592,7 @@ def render_html() -> str:
       </header>
       <div class="controls">
         <input id="filter" type="text" placeholder="Filter openings or players" />
+        <input id="api-key" type="password" placeholder="Lichess API key (optional)" />
         <div class="stats">
           <span id="summary" class="badge"></span>
           <span id="status" class="muted"></span>
@@ -620,6 +625,7 @@ def render_html() -> str:
       const statusEl = document.getElementById('status');
       const summaryEl = document.getElementById('summary');
       const filterEl = document.getElementById('filter');
+      const apiKeyEl = document.getElementById('api-key');
 
       function htmlEscape(str) {
         return String(str)
@@ -666,7 +672,9 @@ def render_html() -> str:
         statusEl.textContent = 'Refreshing…';
         statusEl.className = 'muted';
         try {
-          const response = await fetch('/api/openings');
+          const apiKey = apiKeyEl.value.trim();
+          const url = apiKey ? `/api/openings?api_key=${encodeURIComponent(apiKey)}` : '/api/openings';
+          const response = await fetch(url);
           if (!response.ok) {
             const text = await response.text();
             throw new Error(text || `API error (${response.status})`);
@@ -686,6 +694,10 @@ def render_html() -> str:
       filterEl.addEventListener('input', event => {
         state.filter = event.target.value;
         render();
+      });
+
+      apiKeyEl.addEventListener('change', () => {
+        refresh();
       });
 
       refresh();
@@ -719,7 +731,10 @@ def render_html() -> str:
         searchResultsEl.innerHTML = '';
 
         try {
-          const res = await fetch(`/api/search?opening=${encodeURIComponent(query)}`);
+          const apiKey = apiKeyEl.value.trim();
+          const query = openingInputEl.value.trim();
+          const url = apiKey ? `/api/search?opening=${encodeURIComponent(query)}&api_key=${encodeURIComponent(apiKey)}` : `/api/search?opening=${encodeURIComponent(query)}`;
+          const res = await fetch(url);
           if (!res.ok) {
             const text = await res.text();
             throw new Error(text || `Search API error (${res.status})`);
@@ -937,15 +952,21 @@ def serve_openings(
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
+            params = parse_qs(parsed.query)
             allowed = {"/", "/api/openings", "/stats", "/api/stats", "/api/search"}
             if path not in allowed:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
+            
+            # Create client with API key if provided
+            api_key = params.get("api_key", [None])[0]
+            request_client = LichessClient(debug=client.debug, api_key=api_key) if api_key else client
+            
             stats = load_stats(stats_path)
             games: list[LiveGame] = []
             if path in ("/", "/api/openings"):
                 try:
-                    games = fetch_openings(client, limit, source)
+                    games = fetch_openings(request_client, limit, source)
                     stats = update_stats(stats, games)
                     save_stats(stats_path, stats)
                 except RuntimeError as error:
@@ -965,7 +986,6 @@ def serve_openings(
                         return
                     return
             if path == "/api/search":
-                params = parse_qs(parsed.query)
                 opening_name = params.get("opening", [""])[0].strip()
                 if not opening_name:
                     err = b'{"error": "Missing opening query parameter"}'
@@ -979,7 +999,7 @@ def serve_openings(
                         return
                     return
                 try:
-                    results = search_live_games_by_opening(client, opening_name)
+                    results = search_live_games_by_opening(request_client, opening_name)
                 except RuntimeError as error:
                     message = (
                         "Unable to reach the Lichess API. "
@@ -1120,12 +1140,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "(e.g. \"King's Gambit\"). Results are sorted by average player rating."
         ),
     )
+    parser.add_argument(
+        "--api-key",
+        metavar="KEY",
+        default=None,
+        help="Lichess API key for authenticated requests (avoids 401 errors)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    client = LichessClient(debug=args.debug)
+    client = LichessClient(debug=args.debug, api_key=args.api_key)
 
     if args.serve:
         return serve_openings(
