@@ -1,53 +1,79 @@
 # Chess Openings Live
 
-Chess Openings Live is a concept for a website that organizes **live chess games** by the **opening** currently being played, so observers can browse openings and jump directly to active games.
+Chess Openings Live organizes **live chess games** by the **opening** currently being played, so observers can browse openings and jump directly to active games.
 
-## Core Idea
-- Ingest live games from providers (e.g., Lichess, Chess.com, FIDE, or tournament PGN feeds).
-- Parse each live game in real time and classify the opening (ECO + name) from the current move sequence.
-- Present an opening-centric navigation UI that shows which openings are being played **right now**, with quick links to the relevant live boards.
+## 🚀 Quick Start
 
-## Lichess Ingestion (Prototype)
-This repo includes a small script that pulls the current Lichess TV games and groups them by opening.
+### GitHub Pages (Recommended)
+The easiest way to use this project is via GitHub Pages:
+1. Open `https://[your-username].github.io/chessOpeningsLive/`
+2. Optionally add your Lichess API key for better rate limits
+3. Browse live games grouped by opening
 
-### Run
-```bash
-python scripts/lichess_openings.py
-```
-
-Optional flags:
-- `--poll-interval 30` to refresh every 30 seconds.
-- `--limit 5` to limit the number of TV channels queried.
-- `--json` to emit raw JSON for downstream processing.
-- `--serve` to run a local web server for browsing openings.
-- `--port 8000` to change the server port.
-- `--source auto|tv|broadcast` to select the Lichess data source (default: `auto`).
-- `--debug` to print raw Lichess API payloads for troubleshooting.
-
-### Open in the Browser
+### Local Development
 ```bash
 python scripts/lichess_openings.py --serve
 ```
+Then open http://localhost:8000
 
-Then open http://localhost:8000 to browse openings with active games.
-If the page shows a gateway error, it usually means the Lichess API could not be reached
-(for example, due to firewalls, proxies, or missing internet access).
+## 🎯 Features
 
-The browser view refreshes every 30 seconds and includes a filter box so you can quickly
-search openings or player names.
+- **Live TV games**: Shows current Lichess TV games grouped by opening
+- **Opening search**: Search for live/recent games by opening name  
+- **API key support**: Optional authentication for better rate limits
+- **Auto-refresh**: Data updates every 30 seconds
+- **GitHub Pages ready**: Works as a static site for easy deployment
 
-The server also stores cumulative opening counts in a local JSON file and exposes a stats
-page at http://localhost:8000/stats.
+## 🔑 API Key Usage
 
-If Lichess TV is empty in your region, try the broadcast feed:
+The API key is optional but recommended:
+- **Without API key**: Limited to public Lichess API rates
+- **With API key**: Higher rate limits, access to more features
+- **Get your key**: https://lichess.org/account/oauth/token
+- **Security**: Key is stored locally in your browser only
+
+## 📁 Deployment Options
+
+### GitHub Pages (Static Site)
+- ✅ No server required
+- ✅ Free hosting
+- ✅ Direct Lichess API calls from browser
+- ✅ API key authentication supported
+- ❌ No server-side features (stats page, etc.)
+
+### Local Server (Full Features)
+- ✅ All GitHub Pages features
+- ✅ Opening statistics page
+- ✅ Better error handling
+- ✅ Debug capabilities
+- ❌ Requires Python server
+
+## 🛠️ Local Development Commands
+
 ```bash
+# Start local server with all features
+python scripts/lichess_openings.py --serve
+
+# Custom port
+python scripts/lichess_openings.py --serve --port 8080
+
+# Debug mode
+python scripts/lichess_openings.py --serve --debug
+
+# Use broadcast source instead of TV
 python scripts/lichess_openings.py --serve --source broadcast
+
+# Quick start script
+python start_server.py
 ```
 
-To capture the raw Lichess TV payload for debugging:
-```bash
-python scripts/lichess_openings.py --debug --limit 1
-```
+## 🌐 API Endpoints (Local Server Only)
+
+- `GET /` - Main HTML interface
+- `GET /api/openings` - JSON of current live games
+- `GET /api/search?opening=<name>` - Search games by opening
+- `GET /api/stats` - Opening statistics
+- `GET /stats` - Statistics HTML page
 
 ## High-Level Workflow
 1. **Live game ingestion**

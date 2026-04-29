@@ -220,9 +220,13 @@
           }));
       }
 
-      async function fetchGame(gameId, channelName) {
+      async function fetchGame(gameId, channelName, apiKey = null) {
+        const headers = { 'Accept': 'application/json' };
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
         const url = `${LICHESS_GAME_URL}${gameId}?moves=false&opening=true&clocks=false&evals=false`;
-        const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        const res = await fetch(url, { headers });
         if (!res.ok) return null;
         const data = await res.json();
         const opening = data.opening || {};
@@ -242,14 +246,27 @@
         statusEl.className = 'muted';
         try {
           const apiKey = apiKeyEl.value.trim();
-          const url = apiKey ? `/api/openings?api_key=${encodeURIComponent(apiKey)}` : '/api/openings';
-          const response = await fetch(url);
-          if (!response.ok) {
-            const text = await response.text();
-            throw new Error(text || `API error (${response.status})`);
+          const headers = { 'Accept': 'application/json' };
+          if (apiKey) {
+            headers['Authorization'] = `Bearer ${apiKey}`;
           }
-          const data = await response.json();
-          state.openings = data;
+          
+          const tvRes = await fetch(LICHESS_TV_URL, { headers });
+          if (!tvRes.ok) throw new Error(`Lichess TV API error (${tvRes.status})`);
+          const tvData = await tvRes.json();
+
+          const channels = [];
+          for (const [name, payload] of Object.entries(tvData)) {
+            if (typeof payload !== 'object' || !payload) continue;
+            const gameId = payload.gameId || (payload.game && payload.game.id);
+            if (gameId) channels.push({ name, gameId });
+          }
+
+          const gameResults = await Promise.all(
+            channels.map(ch => fetchGame(ch.gameId, ch.name, apiKey).catch(() => null))
+          );
+          const games = gameResults.filter(Boolean);
+          state.openings = buildOpeningsPayload(games);
           statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
           render();
         } catch (error) {
@@ -305,39 +322,105 @@
         const query = openingInputEl.value.trim();
         if (!query) return;
 
+        const match = resolveOpeningMoves(query);
+        if (!match) {
+          searchStatusEl.textContent = `Opening "${query}" not found. Try one of the suggestions.`;
+          searchStatusEl.className = 'search-status error';
+          searchResultsEl.innerHTML = '';
+          return;
+        }
+
         searchBtnEl.disabled = true;
         searchStatusEl.className = 'search-status';
-        searchStatusEl.textContent = `Searching for "${query}"…`;
+        searchStatusEl.textContent = `Searching for ${match.name}…`;
         searchResultsEl.innerHTML = '';
 
         try {
           const apiKey = apiKeyEl.value.trim();
-          const url = apiKey ? `/api/search?opening=${encodeURIComponent(query)}&api_key=${encodeURIComponent(apiKey)}` : `/api/search?opening=${encodeURIComponent(query)}`;
-          const res = await fetch(url);
-          if (!res.ok) {
-            const text = await res.text();
-            throw new Error(text || `Search API error (${res.status})`);
+          const headers = { 'Accept': 'application/json' };
+          if (apiKey) {
+            headers['Authorization'] = `Bearer ${apiKey}`;
           }
-          const games = await res.json();
 
-          if (!Array.isArray(games) || !games.length) {
-            searchStatusEl.textContent = `No recent games found for "${query}" this month.`;
-            searchResultsEl.innerHTML = '';
+          // Step 1: get recent game IDs from the Lichess Opening Explorer.
+          const now = new Date();
+          const since = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          const explorerBase =
+            `${LICHESS_EXPLORER_URL}?play=${match.moves}` +
+            `&recentGames=8&topGames=0` +
+            `&speeds=blitz,rapid,classical` +
+            `&since=${since}`;
+          // The ratings filter may require a Lichess OAuth token; fall back to an
+          // unfiltered query if the API returns 401.
+          let explorerRes = await fetch(
+            `${explorerBase}&ratings=1600,1800,2000,2200,2500`,
+            { headers },
+          );
+          if (explorerRes.status === 401) {
+            explorerRes = await fetch(explorerBase, { headers });
+          }
+          if (!explorerRes.ok) throw new Error(`Explorer API error (${explorerRes.status})`);
+          const explorerData = await explorerRes.json();
+          const recentGames = explorerData.recentGames || [];
+
+          if (!recentGames.length) {
+            searchStatusEl.textContent = `No recent games found for "${match.name}" this month.`;
             return;
           }
 
-          searchState.results = games;
+          // Step 2: bulk-fetch game details to check live status and get ratings.
+          const ids = recentGames.map(g => g.id).filter(Boolean).join(',');
+          const exportHeaders = {
+            'Content-Type': 'text/plain',
+            'Accept': 'application/x-ndjson',
+          };
+          if (apiKey) {
+            exportHeaders['Authorization'] = `Bearer ${apiKey}`;
+          }
+          const exportRes = await fetch(LICHESS_EXPORT_IDS_URL, {
+            method: 'POST',
+            headers: exportHeaders,
+            body: ids,
+          });
+          if (!exportRes.ok) throw new Error(`Export API error (${exportRes.status})`);
+
+          const ndjson = await exportRes.text();
+          const games = ndjson.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+
+          // Step 3: build result objects with rating and live-status info.
+          searchState.results = games.map(game => {
+            const white = (game.players || {}).white || {};
+            const black = (game.players || {}).black || {};
+            const whiteRating = white.rating || 0;
+            const blackRating = black.rating || 0;
+            const opening = game.opening || {};
+            return {
+              id: game.id || '',
+              url: `https://lichess.org/${game.id || ''}`,
+              white: (white.user && white.user.name) || 'Anonymous',
+              whiteRating,
+              black: (black.user && black.user.name) || 'Anonymous',
+              blackRating,
+              avgRating: whiteRating && blackRating ? Math.round((whiteRating + blackRating) / 2) : (whiteRating || blackRating),
+              isLive: game.status === 'started',
+              opening: opening.name || match.name,
+              eco: opening.eco || '',
+              createdAt: game.createdAt || 0,
+            };
+          });
+
           renderSearchResults();
 
-          const liveCount = games.filter(g => g.isLive).length;
+          const liveCount = searchState.results.filter(g => g.isLive).length;
           if (liveCount > 0) {
             searchStatusEl.textContent =
-              `${liveCount} live game${liveCount !== 1 ? 's' : ''} · ${games.length} total recent · auto-refreshes every 30 s`;
+              `${liveCount} live game${liveCount !== 1 ? 's' : ''} · ${searchState.results.length} total recent · auto-refreshes every 30 s`;
           } else {
             searchStatusEl.textContent =
-              `No live games currently — showing ${games.length} most recent · auto-refreshes every 30 s`;
+              `No live games currently — showing ${searchState.results.length} most recent · auto-refreshes every 30 s`;
           }
 
+          // Auto-refresh the search results every 30 s.
           if (searchState.refreshTimer) clearInterval(searchState.refreshTimer);
           searchState.refreshTimer = setInterval(searchOpenings, 30000);
         } catch (err) {
