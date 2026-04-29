@@ -50,6 +50,11 @@
       .btn { padding: 10px 20px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
       .btn:hover { background: #2748c2; }
       .btn:disabled { background: var(--muted); cursor: not-allowed; }
+      .btn-secondary { background: var(--muted); color: var(--text); }
+      .btn-secondary:hover { background: #4a5568; }
+      .auth-section { display: flex; align-items: center; gap: 12px; }
+      .user-info { display: flex; align-items: center; gap: 8px; }
+      .user-info span { color: var(--accent); font-weight: 600; }
       .sort-toggle { display: flex; gap: 6px; flex-shrink: 0; }
       .sort-btn { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-size: 0.9rem; color: var(--text); }
       .sort-btn.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
@@ -74,7 +79,13 @@
       </header>
       <div class="controls">
         <input id="filter" type="text" placeholder="Filter openings or players" />
-        <input id="api-key" type="password" placeholder="Lichess API key (optional)" />
+        <div class="auth-section">
+          <button id="login-btn" class="btn">Login with Lichess</button>
+          <div id="user-info" class="user-info" style="display: none;">
+            <span id="username"></span>
+            <button id="logout-btn" class="btn btn-secondary">Logout</button>
+          </div>
+        </div>
         <div class="stats">
           <span id="summary" class="badge"></span>
           <span id="status" class="muted"></span>
@@ -154,9 +165,16 @@
           .replace(/'/g, '&#39;');
       }
 
-      // Helper function to fetch with CORS proxy fallback
+      // Helper function to fetch with CORS proxy fallback and OAuth
       async function fetchWithProxy(url, options = {}) {
         let lastError;
+        
+        // Add Authorization header if we have an OAuth token
+        const authOptions = { ...options };
+        if (authToken) {
+          authOptions.headers = authOptions.headers || {};
+          authOptions.headers.Authorization = `Bearer ${authToken}`;
+        }
         
         // Try each proxy in order
         for (const proxy of CORS_PROXIES) {
@@ -170,11 +188,9 @@
               proxyUrl = `${proxy}${url}`;
             }
             
-            // Use minimal headers to avoid CORS issues
-            const proxyOptions = {
-              method: options.method || 'GET',
-              body: options.body,
-            };
+            // Remove Authorization header for CORS proxies (they don't allow it)
+            const proxyOptions = { ...authOptions };
+            delete proxyOptions.headers?.Authorization;
             
             const response = await fetch(proxyUrl, proxyOptions);
             if (response.ok) {
@@ -186,9 +202,9 @@
           }
         }
         
-        // If all proxies fail, try without proxy
+        // If all proxies fail, try without proxy and with OAuth token
         try {
-          const response = await fetch(url, options);
+          const response = await fetch(url, authOptions);
           if (response.ok) {
             return response;
           }
@@ -199,6 +215,109 @@
         throw lastError || new Error('All fetch attempts failed - CORS proxies may be down');
       }
 
+      // ── OAuth Authentication ──────────────────────────────────────────────────
+
+      // OAuth configuration
+      const LICHESS_CLIENT_ID = 'chessOpeningsLive'; // You'll need to register this app
+      const REDIRECT_URI = `${window.location.origin}${window.location.pathname}`;
+      const LICHESS_OAUTH_URL = 'https://lichess.org/oauth';
+      
+      // Authentication state
+      let authToken = localStorage.getItem('lichess_token') || null;
+      let currentUser = JSON.parse(localStorage.getItem('lichess_user') || 'null');
+
+      // DOM elements for auth
+      const loginBtn = document.getElementById('login-btn');
+      const logoutBtn = document.getElementById('logout-btn');
+      const userInfo = document.getElementById('user-info');
+      const username = document.getElementById('username');
+
+      // OAuth flow
+      function initiateOAuth() {
+        const scope = 'email:read';
+        const state = Math.random().toString(36).substring(7);
+        sessionStorage.setItem('oauth_state', state);
+        
+        const authUrl = `${LICHESS_OAUTH_URL}/authorize?` +
+          `response_type=token&` +
+          `client_id=${LICHESS_CLIENT_ID}&` +
+          `redirect_uri=${encodeURIComponent(REDIRECT_URI)}&` +
+          `scope=${scope}&` +
+          `state=${state}`;
+        
+        window.location.href = authUrl;
+      }
+
+      function handleOAuthCallback() {
+        const hash = window.location.hash.substring(1);
+        const params = new URLSearchParams(hash);
+        
+        const token = params.get('access_token');
+        const state = params.get('state');
+        const storedState = sessionStorage.getItem('oauth_state');
+        
+        if (token && state === storedState) {
+          authToken = token;
+          localStorage.setItem('lichess_token', token);
+          sessionStorage.removeItem('oauth_state');
+          
+          // Get user info
+          fetchUserInfo();
+          
+          // Clean URL
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+
+      async function fetchUserInfo() {
+        try {
+          const response = await fetch(`${LICHESS_OAUTH_URL}/api/account`, {
+            headers: {
+              'Authorization': `Bearer ${authToken}`
+            }
+          });
+          
+          if (response.ok) {
+            const user = await response.json();
+            currentUser = user;
+            localStorage.setItem('lichess_user', JSON.stringify(user));
+            updateAuthUI();
+          }
+        } catch (error) {
+          console.error('Failed to fetch user info:', error);
+        }
+      }
+
+      function updateAuthUI() {
+        if (authToken && currentUser) {
+          loginBtn.style.display = 'none';
+          userInfo.style.display = 'flex';
+          username.textContent = currentUser.username || 'User';
+        } else {
+          loginBtn.style.display = 'block';
+          userInfo.style.display = 'none';
+        }
+      }
+
+      function logout() {
+        authToken = null;
+        currentUser = null;
+        localStorage.removeItem('lichess_token');
+        localStorage.removeItem('lichess_user');
+        updateAuthUI();
+      }
+
+      // Event listeners
+      loginBtn.addEventListener('click', initiateOAuth);
+      logoutBtn.addEventListener('click', logout);
+
+      // Check for OAuth callback on page load
+      if (window.location.hash && window.location.hash.includes('access_token')) {
+        handleOAuthCallback();
+      } else {
+        updateAuthUI();
+      }
+
       // ── TV feed ────────────────────────────────────────────────────────────
 
       const state = { openings: [], filter: '' };
@@ -206,7 +325,6 @@
       const statusEl = document.getElementById('status');
       const summaryEl = document.getElementById('summary');
       const filterEl = document.getElementById('filter');
-      const apiKeyEl = document.getElementById('api-key');
 
       function render() {
         const needle = state.filter.trim().toLowerCase();
@@ -323,7 +441,12 @@
         render();
       });
 
-      apiKeyEl.addEventListener('change', () => {
+      // Refresh when user logs in/out
+      loginBtn.addEventListener('click', () => {
+        // OAuth will handle redirect, then refresh will happen after callback
+      });
+      logoutBtn.addEventListener('click', () => {
+        logout();
         refresh();
       });
 
