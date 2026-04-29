@@ -18,8 +18,45 @@ LICHESS_TV_URL = "https://lichess.org/api/tv/channels"
 LICHESS_BROADCASTS_URL = "https://lichess.org/api/broadcast"
 LICHESS_BROADCAST_ROUND_URL = "https://lichess.org/api/broadcast/round/{round_id}"
 LICHESS_GAME_EXPORT = "https://lichess.org/game/export/{game_id}"
+LICHESS_EXPORT_IDS_URL = "https://lichess.org/api/games/export/_ids"
+LICHESS_EXPLORER_URL = "https://explorer.lichess.ovh/lichess"
 DEFAULT_PORT = 8000
 DEFAULT_STATS_FILE = "opening_stats.json"
+
+# Maps opening names to UCI move sequences for the Lichess Opening Explorer API.
+OPENING_MOVES: dict[str, str] = {
+    "Alekhine's Defense":     "e2e4,g8f6",
+    "Benoni Defense":         "d2d4,g8f6,c2c4,c7c5,d4d5",
+    "Bird's Opening":         "f2f4",
+    "Budapest Gambit":        "d2d4,g8f6,c2c4,e7e5",
+    "Caro-Kann Defense":      "e2e4,c7c6",
+    "Catalan Opening":        "d2d4,g8f6,c2c4,e7e6,g2g3",
+    "Dutch Defense":          "d2d4,f7f5",
+    "English Opening":        "c2c4",
+    "Four Knights Game":      "e2e4,e7e5,g1f3,b8c6,b1c3,g8f6",
+    "French Defense":         "e2e4,e7e6",
+    "Grünfeld Defense":       "d2d4,g8f6,c2c4,g7g6,b1c3,d7d5",
+    "Italian Game":           "e2e4,e7e5,g1f3,b8c6,f1c4",
+    "King's Gambit":          "e2e4,e7e5,f2f4",
+    "King's Indian Defense":  "d2d4,g8f6,c2c4,g7g6,b1c3,f8g7",
+    "London System":          "d2d4,d7d5,g1f3,g8f6,c1f4",
+    "Nimzo-Indian Defense":   "d2d4,g8f6,c2c4,e7e6,b1c3,f8b4",
+    "Petrov's Defense":       "e2e4,e7e5,g1f3,g8f6",
+    "Pirc Defense":           "e2e4,d7d6,d2d4,g8f6,b1c3,g7g6",
+    "Queen's Gambit":         "d2d4,d7d5,c2c4",
+    "Queen's Indian Defense": "d2d4,g8f6,c2c4,e7e6,g1f3,b7b6",
+    "Réti Opening":           "g1f3",
+    "Ruy Lopez":              "e2e4,e7e5,g1f3,b8c6,f1b5",
+    "Scandinavian Defense":   "e2e4,d7d5",
+    "Scotch Game":            "e2e4,e7e5,g1f3,b8c6,d2d4",
+    "Semi-Slav Defense":      "d2d4,d7d5,c2c4,c7c6,b1c3,g8f6,g1f3,e7e6",
+    "Sicilian Defense":       "e2e4,c7c5",
+    "Sicilian Dragon":        "e2e4,c7c5,g1f3,d7d6,d2d4,c5d4,f3d4,g8f6,b1c3,g7g6",
+    "Sicilian Najdorf":       "e2e4,c7c5,g1f3,d7d6,d2d4,c5d4,f3d4,g8f6,b1c3,a7a6",
+    "Sicilian Scheveningen":  "e2e4,c7c5,g1f3,d7d6,d2d4,c5d4,f3d4,g8f6,b1c3,e7e6",
+    "Slav Defense":           "d2d4,d7d5,c2c4,c7c6",
+    "Vienna Game":            "e2e4,e7e5,b1c3",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +118,30 @@ class LichessClient:
             if not line:
                 continue
             items.append(json.loads(line))
+        return items
+
+    def _fetch_post_ndjson(self, url: str, body: str) -> list[dict]:
+        """POST *body* and parse the NDJSON response."""
+        request = Request(
+            url,
+            data=body.encode("utf-8"),
+            headers={
+                "User-Agent": self.user_agent,
+                "Content-Type": "text/plain",
+                "Accept": "application/x-ndjson",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                raw = response.read().decode("utf-8")
+        except (HTTPError, URLError) as error:
+            raise RuntimeError(f"Failed to POST {url}: {error}") from error
+        items = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if line:
+                items.append(json.loads(line))
         return items
 
     def fetch_tv_channels(self) -> list[dict]:
@@ -285,6 +346,85 @@ def fetch_openings(
     raise ValueError(f"Unknown source: {source}")
 
 
+def resolve_opening_moves(name: str) -> tuple[str, str] | None:
+    """Return (canonical_name, uci_moves) for *name*, or None if not found.
+
+    Tries an exact match first, then a case-insensitive substring match.
+    """
+    if name in OPENING_MOVES:
+        return name, OPENING_MOVES[name]
+    lower = name.lower()
+    for canonical, moves in OPENING_MOVES.items():
+        if lower in canonical.lower():
+            return canonical, moves
+    return None
+
+
+def search_live_games_by_opening(client: LichessClient, opening_name: str) -> list[dict]:
+    """Return live and recent games for *opening_name*, sorted by avg rating.
+
+    Uses the Lichess Opening Explorer to retrieve recent game IDs, then
+    bulk-fetches their details. Live games (status "started") are sorted
+    first; within each group games are ordered by average rating descending.
+    """
+    resolved = resolve_opening_moves(opening_name)
+    if resolved is None:
+        return []
+    canonical_name, moves = resolved
+
+    # Query the explorer for recent games of this opening.
+    now = time.strftime("%Y-%m")
+    explorer_url = (
+        f"{LICHESS_EXPLORER_URL}?play={moves}"
+        f"&recentGames=15&topGames=0"
+        f"&speeds=blitz,rapid,classical"
+        f"&ratings=1600,1800,2000,2200,2500"
+        f"&since={now}"
+    )
+    explorer_data = client._fetch_json(explorer_url)
+    recent_games = explorer_data.get("recentGames") or []
+    game_ids = [g["id"] for g in recent_games if g.get("id")]
+    if not game_ids:
+        return []
+
+    # Bulk-fetch game details to get status and ratings.
+    games = client._fetch_post_ndjson(LICHESS_EXPORT_IDS_URL, ",".join(game_ids))
+
+    results: list[dict] = []
+    for game in games:
+        players = game.get("players") or {}
+        white = players.get("white") or {}
+        black = players.get("black") or {}
+        white_rating: int = white.get("rating") or 0
+        black_rating: int = black.get("rating") or 0
+        avg_rating = (
+            (white_rating + black_rating) // 2
+            if white_rating and black_rating
+            else white_rating or black_rating
+        )
+        opening_data = game.get("opening") or {}
+        game_id = game.get("id") or ""
+        results.append(
+            {
+                "id": game_id,
+                "url": f"https://lichess.org/{game_id}",
+                "white": (white.get("user") or {}).get("name") or "Anonymous",
+                "whiteRating": white_rating,
+                "black": (black.get("user") or {}).get("name") or "Anonymous",
+                "blackRating": black_rating,
+                "avgRating": avg_rating,
+                "isLive": game.get("status") == "started",
+                "status": game.get("status") or "",
+                "opening": opening_data.get("name") or canonical_name,
+                "eco": opening_data.get("eco") or "",
+            }
+        )
+
+    # Live games first, then sort by avg rating descending within each group.
+    results.sort(key=lambda g: (not g["isLive"], -g["avgRating"]))
+    return results
+
+
 def format_opening_key(game: LiveGame) -> str:
     if game.eco:
         return f"{game.eco} {game.opening_name}"
@@ -402,6 +542,32 @@ def render_html() -> str:
       .channel { color: var(--muted); font-size: 0.9rem; }
       .muted { color: var(--muted); }
       .error { background: #fff2f2; border: 1px solid #f2c0c0; padding: 12px; border-radius: 10px; }
+      /* Opening name button in TV grid */
+      .opening-name-btn { background: none; border: none; padding: 0; font: inherit; font-size: 1.05rem; font-weight: 600; color: var(--accent); cursor: pointer; text-align: left; }
+      .opening-name-btn:hover { text-decoration: underline; }
+      /* Search section */
+      .search-section { margin-top: 48px; }
+      .search-section > h2 { margin: 0 0 4px 0; font-size: 1.3rem; }
+      .search-section > .section-meta { color: var(--muted); margin: 0 0 16px 0; font-size: 0.95rem; }
+      .search-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+      .search-controls input { flex: 1 1 260px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: #fff; font-size: 1rem; }
+      .btn { padding: 10px 20px; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+      .btn:hover { background: #2748c2; }
+      .btn:disabled { background: var(--muted); cursor: not-allowed; }
+      .sort-toggle { display: flex; gap: 6px; flex-shrink: 0; }
+      .sort-btn { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-size: 0.9rem; color: var(--text); }
+      .sort-btn.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+      .search-status { color: var(--muted); font-size: 0.9rem; margin: 0 0 12px 0; min-height: 1.3em; }
+      .search-status.error { color: #a00; }
+      .search-results { display: flex; flex-direction: column; gap: 10px; }
+      .game-card { background: var(--card); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .game-card-left { min-width: 0; }
+      .game-players { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .opening-label { color: var(--muted); font-size: 0.85rem; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .game-card-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+      .rating-badge { background: var(--accent-soft); color: var(--accent); padding: 4px 9px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+      .live-badge { background: #fef2f2; color: #b91c1c; padding: 4px 9px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; white-space: nowrap; }
+      .recent-badge { background: #f0fdf4; color: #166534; padding: 4px 9px; border-radius: 6px; font-size: 0.8rem; white-space: nowrap; }
     </style>
   </head>
   <body>
@@ -419,13 +585,37 @@ def render_html() -> str:
         <a class="link" href="/stats">View opening stats</a>
       </div>
       <div id="openings" class="grid"></div>
+
+      <section class="search-section">
+        <h2>Search Live Games by Opening</h2>
+        <p class="section-meta">Find Lichess games for any opening, sorted by strongest players. Click an opening name above to pre-fill.</p>
+        <div class="search-controls">
+          <input id="opening-input" type="text" list="opening-suggestions" placeholder="e.g. King's Gambit, Sicilian Defense…" autocomplete="off" />
+          <datalist id="opening-suggestions"></datalist>
+          <button id="search-btn" class="btn">Search</button>
+          <div class="sort-toggle">
+            <button class="sort-btn active" data-sort="rating">Avg Rating ↓</button>
+            <button class="sort-btn" data-sort="recent">Most Recent</button>
+          </div>
+        </div>
+        <p id="search-status" class="search-status"></p>
+        <div id="search-results" class="search-results"></div>
+      </section>
     </div>
     <script>
+      // ── TV feed ────────────────────────────────────────────────────────────
+
       const state = { openings: [], filter: '' };
       const openingsEl = document.getElementById('openings');
       const statusEl = document.getElementById('status');
       const summaryEl = document.getElementById('summary');
       const filterEl = document.getElementById('filter');
+
+      function htmlEscape(str) {
+        return String(str)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
 
       function render() {
         const needle = state.filter.trim().toLowerCase();
@@ -440,11 +630,11 @@ def render_html() -> str:
         } else {
           openingsEl.innerHTML = filtered.map(opening => {
             const gamesHtml = opening.games.map(game => (
-              `<li><a href="${game.url}" target="_blank">${game.players}</a> <span class="channel">[${game.channel}]</span></li>`
+              `<li><a href="${htmlEscape(game.url)}" target="_blank" rel="noopener noreferrer">${htmlEscape(game.players)}</a> <span class="channel">[${htmlEscape(game.channel)}]</span></li>`
             )).join('');
             return `
               <section class="opening">
-                <h2>${opening.opening} <span class="count">(${opening.count})</span></h2>
+                <h2><button class="opening-name-btn" data-name="${htmlEscape(opening.opening)}">${htmlEscape(opening.opening)}</button> <span class="count">(${opening.count})</span></h2>
                 <ul>${gamesHtml}</ul>
               </section>
             `;
@@ -453,6 +643,14 @@ def render_html() -> str:
         const totalGames = filtered.reduce((sum, opening) => sum + opening.count, 0);
         summaryEl.textContent = `${filtered.length} openings · ${totalGames} games`;
       }
+
+      openingsEl.addEventListener('click', event => {
+        const btn = event.target.closest('.opening-name-btn');
+        if (!btn) return;
+        openingInputEl.value = btn.dataset.name;
+        document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
+        triggerSearch();
+      });
 
       async function refresh() {
         statusEl.textContent = 'Refreshing…';
@@ -482,6 +680,129 @@ def render_html() -> str:
 
       refresh();
       setInterval(refresh, 30000);
+
+      // ── Opening search ─────────────────────────────────────────────────────
+
+      const KNOWN_OPENINGS = ["Alekhine's Defense","Benoni Defense","Bird's Opening","Budapest Gambit","Caro-Kann Defense","Catalan Opening","Dutch Defense","English Opening","Four Knights Game","French Defense","Gr\\u00fcnfeld Defense","Italian Game","King's Gambit","King's Indian Defense","London System","Nimzo-Indian Defense","Petrov's Defense","Pirc Defense","Queen's Gambit","Queen's Indian Defense","R\\u00e9ti Opening","Ruy Lopez","Scandinavian Defense","Scotch Game","Semi-Slav Defense","Sicilian Defense","Sicilian Dragon","Sicilian Najdorf","Sicilian Scheveningen","Slav Defense","Vienna Game"];
+
+      const openingInputEl = document.getElementById('opening-input');
+      const searchBtnEl = document.getElementById('search-btn');
+      const searchStatusEl = document.getElementById('search-status');
+      const searchResultsEl = document.getElementById('search-results');
+
+      const searchState = { results: [], sort: 'rating', refreshTimer: null };
+
+      const datalist = document.getElementById('opening-suggestions');
+      for (const name of KNOWN_OPENINGS.sort()) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        datalist.appendChild(opt);
+      }
+
+      async function searchOpenings() {
+        const query = openingInputEl.value.trim();
+        if (!query) return;
+
+        searchBtnEl.disabled = true;
+        searchStatusEl.className = 'search-status';
+        searchStatusEl.textContent = `Searching for "${query}"…`;
+        searchResultsEl.innerHTML = '';
+
+        try {
+          const res = await fetch(`/api/search?opening=${encodeURIComponent(query)}`);
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || `Search API error (${res.status})`);
+          }
+          const games = await res.json();
+
+          if (!Array.isArray(games) || !games.length) {
+            searchStatusEl.textContent = `No recent games found for "${query}" this month.`;
+            searchResultsEl.innerHTML = '';
+            return;
+          }
+
+          searchState.results = games;
+          renderSearchResults();
+
+          const liveCount = games.filter(g => g.isLive).length;
+          if (liveCount > 0) {
+            searchStatusEl.textContent =
+              `${liveCount} live game${liveCount !== 1 ? 's' : ''} · ${games.length} total recent · auto-refreshes every 30 s`;
+          } else {
+            searchStatusEl.textContent =
+              `No live games currently — showing ${games.length} most recent · auto-refreshes every 30 s`;
+          }
+
+          if (searchState.refreshTimer) clearInterval(searchState.refreshTimer);
+          searchState.refreshTimer = setInterval(searchOpenings, 30000);
+        } catch (err) {
+          searchStatusEl.textContent = `Error: ${err.message}`;
+          searchStatusEl.className = 'search-status error';
+        } finally {
+          searchBtnEl.disabled = false;
+        }
+      }
+
+      function renderSearchResults() {
+        if (!searchState.results.length) {
+          searchResultsEl.innerHTML = '<p class="muted">No games found.</p>';
+          return;
+        }
+
+        const sorted = [...searchState.results].sort((a, b) => {
+          if (searchState.sort === 'rating') {
+            if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+            return b.avgRating - a.avgRating;
+          }
+          return b.createdAt - a.createdAt;
+        });
+
+        searchResultsEl.innerHTML = sorted.map(game => {
+          const statusBadge = game.isLive
+            ? '<span class="live-badge">&#9679; LIVE</span>'
+            : '<span class="recent-badge">Recent</span>';
+          const openingLabel = game.eco
+            ? `${htmlEscape(game.eco)} ${htmlEscape(game.opening)}`
+            : htmlEscape(game.opening);
+          const players =
+            `${htmlEscape(game.white)} (${game.whiteRating}) vs ${htmlEscape(game.black)} (${game.blackRating})`;
+          return `
+            <div class="game-card">
+              <div class="game-card-left">
+                <div class="game-players">
+                  <a href="${htmlEscape(game.url)}" target="_blank" rel="noopener noreferrer">${players}</a>
+                </div>
+                <div class="opening-label">${openingLabel}</div>
+              </div>
+              <div class="game-card-right">
+                <span class="rating-badge">&#11088; ${game.avgRating}</span>
+                ${statusBadge}
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      document.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          searchState.sort = btn.dataset.sort;
+          renderSearchResults();
+        });
+      });
+
+      function triggerSearch() {
+        if (searchState.refreshTimer) {
+          clearInterval(searchState.refreshTimer);
+          searchState.refreshTimer = null;
+        }
+        searchOpenings();
+      }
+
+      searchBtnEl.addEventListener('click', triggerSearch);
+      openingInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') triggerSearch(); });
     </script>
   </body>
 </html>
@@ -600,15 +921,19 @@ def serve_openings(
     stats_path: Path,
 ) -> int:
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path not in ("/", "/api/openings", "/stats", "/api/stats"):
+            parsed = urlparse(self.path)
+            path = parsed.path
+            allowed = {"/", "/api/openings", "/stats", "/api/stats", "/api/search"}
+            if path not in allowed:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             stats = load_stats(stats_path)
             games: list[LiveGame] = []
-            if self.path in ("/", "/api/openings"):
+            if path in ("/", "/api/openings"):
                 try:
                     games = fetch_openings(client, limit, source)
                     stats = update_stats(stats, games)
@@ -629,7 +954,49 @@ def serve_openings(
                     except BrokenPipeError:
                         return
                     return
-            if self.path == "/stats":
+            if path == "/api/search":
+                params = parse_qs(parsed.query)
+                opening_name = params.get("opening", [""])[0].strip()
+                if not opening_name:
+                    err = b'{"error": "Missing opening query parameter"}'
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err)))
+                    self.end_headers()
+                    try:
+                        self.wfile.write(err)
+                    except BrokenPipeError:
+                        return
+                    return
+                try:
+                    results = search_live_games_by_opening(client, opening_name)
+                except RuntimeError as error:
+                    message = (
+                        "Unable to reach the Lichess API. "
+                        "Check your internet connection or firewall settings."
+                    )
+                    body = f"{message}\n\nDetails: {error}\n"
+                    response = body.encode("utf-8")
+                    self.send_response(HTTPStatus.BAD_GATEWAY)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(response)))
+                    self.end_headers()
+                    try:
+                        self.wfile.write(response)
+                    except BrokenPipeError:
+                        return
+                    return
+                response = json.dumps(results, indent=2).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                try:
+                    self.wfile.write(response)
+                except BrokenPipeError:
+                    return
+                return
+            if path == "/stats":
                 html = render_stats_html().encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -640,7 +1007,7 @@ def serve_openings(
                 except BrokenPipeError:
                     return
                 return
-            if self.path == "/api/stats":
+            if path == "/api/stats":
                 response = json.dumps(stats, indent=2).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
@@ -652,7 +1019,7 @@ def serve_openings(
                     return
                 return
             payload = build_openings_payload(games)
-            if self.path == "/api/openings":
+            if path == "/api/openings":
                 response = json.dumps(payload, indent=2).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
@@ -734,6 +1101,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=Path(DEFAULT_STATS_FILE),
         help=f"Path to stats JSON file (default: {DEFAULT_STATS_FILE})",
     )
+    parser.add_argument(
+        "--search-opening",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Search for live/recent Lichess games by opening name "
+            "(e.g. \"King's Gambit\"). Results are sorted by average player rating."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -745,6 +1121,48 @@ def main(argv: list[str]) -> int:
         return serve_openings(
             client, args.port, args.limit, args.source, args.stats_file
         )
+
+    if args.search_opening:
+        resolved = resolve_opening_moves(args.search_opening)
+        if resolved is None:
+            known = ", ".join(sorted(OPENING_MOVES))
+            print(
+                f"Unknown opening: {args.search_opening!r}\n"
+                f"Known openings: {known}",
+                file=sys.stderr,
+            )
+            return 1
+        canonical_name, _ = resolved
+        try:
+            results = search_live_games_by_opening(client, args.search_opening)
+        except RuntimeError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            live = [g for g in results if g["isLive"]]
+            recent = [g for g in results if not g["isLive"]]
+            print(f"\n{canonical_name}")
+            if live:
+                print(f"\n  Live games ({len(live)}):")
+                for g in live:
+                    print(
+                        f"    {g['white']} ({g['whiteRating']}) vs "
+                        f"{g['black']} ({g['blackRating']})  "
+                        f"avg {g['avgRating']}  {g['url']}"
+                    )
+            else:
+                print("\n  No live games currently.")
+            if recent:
+                print(f"\n  Recent games ({len(recent)}):")
+                for g in recent:
+                    print(
+                        f"    {g['white']} ({g['whiteRating']}) vs "
+                        f"{g['black']} ({g['blackRating']})  "
+                        f"avg {g['avgRating']}  {g['url']}"
+                    )
+        return 0
 
     while True:
         try:
